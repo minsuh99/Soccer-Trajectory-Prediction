@@ -1,6 +1,4 @@
 import os
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # For reproducibility
-
 import random
 import torch
 import numpy as np
@@ -13,26 +11,25 @@ from make_dataset import MultiMatchSoccerDataset, organize_and_process
 from utils.utils import set_seed, plot_trajectories_on_pitch
 from utils.data_utils import split_dataset_indices, custom_collate_fn
 
-# 0. Set seed
-random.seed(42)
-np.random.seed(42)              
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)           
-torch.cuda.manual_seed_all(42)  
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-torch.use_deterministic_algorithms(True)
-os.environ["PYTHONHASHSEED"] = str(42)
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+# 0. Set seed       
+def set_evertyhing(seed):  
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+    os.environ["PYTHONHASHSEED"] = str(42)
+    torch.backends.cudnn.enabled = False
+    os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
-for _ in range(2):
-    print(torch.rand(3))
-    print(torch.rand(3))
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"  # For reproducability
+set_evertyhing(42)
 
-def seed_worker(worker_id):
-    worker_seed = torch.initial_seed() % 2**32
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
+def worker_init_fn(worker_id):
+    seed = 42
+    np.random.seed(seed + worker_id)
 
 g = torch.Generator()
 g.manual_seed(42)
@@ -42,7 +39,7 @@ raw_data_path = "idsse-data"
 data_save_path = "match_data"
 batch_size = 32
 num_workers = 8
-epochs = 1
+epochs = 100
 learning_rate = 1e-4
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -64,7 +61,7 @@ train_dataloader = DataLoader(
     pin_memory=True,
     persistent_workers=False,
     collate_fn=custom_collate_fn,
-    worker_init_fn=seed_worker,
+    worker_init_fn=worker_init_fn,
     generator=g
 )
 
@@ -76,7 +73,7 @@ test_dataloader = DataLoader(
     pin_memory=True,
     persistent_workers=False,
     collate_fn=custom_collate_fn,
-    worker_init_fn=seed_worker
+    worker_init_fn=worker_init_fn
 )
 
 print("---Data Load!---")
