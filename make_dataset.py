@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from floodlight.io.dfl import read_position_data_xml, read_event_data_xml, read_pitch_from_mat_info_xml
-from utils.utils import calc_velocites, correct_all_player_jumps_adjacent, set_seed
+from utils.utils import calc_velocites, correct_all_player_jumps_adjacent
 from utils.data_utils import (
     infer_starters_from_tracking,
     sort_columns_by_original_order,
@@ -384,7 +384,6 @@ class MultiMatchSoccerDataset(Dataset):
 
 
 if __name__ == "__main__":
-    set_seed(42)
     raw_data_path = "idsse-data" # Raw Data Downloaded Path
     data_save_path = "match_data" # Saving path for preprocessed data
     organize_and_process(raw_data_path, data_save_path)

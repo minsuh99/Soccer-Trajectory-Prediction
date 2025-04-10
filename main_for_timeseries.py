@@ -8,39 +8,19 @@ from torch.utils.data import DataLoader, Subset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from models.lstm_model import DefenseTrajectoryPredictor
 from make_dataset import MultiMatchSoccerDataset, organize_and_process
-from utils.utils import set_seed, plot_trajectories_on_pitch
+from utils.utils import set_evertyhing, worker_init_fn, generator, plot_trajectories_on_pitch
 from utils.data_utils import split_dataset_indices, custom_collate_fn
-
-# 0. Set seed       
-def set_evertyhing(seed):  
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True)
-    os.environ["PYTHONHASHSEED"] = str(42)
-    torch.backends.cudnn.enabled = False
-    os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"  # For reproducability
-set_evertyhing(42)
-
-def worker_init_fn(worker_id):
-    seed = 42
-    np.random.seed(seed + worker_id)
-
-g = torch.Generator()
-g.manual_seed(42)
 
 # 1. Hyperparameter Setting
 raw_data_path = "idsse-data"
 data_save_path = "match_data"
-batch_size = 32
+batch_size = 64
 num_workers = 8
 epochs = 100
 learning_rate = 1e-4
+SEED = 42
+
+set_evertyhing(SEED)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 2. Data Loading
@@ -51,7 +31,7 @@ else:
     print("Skip organize_and_process")
 
 dataset = MultiMatchSoccerDataset(data_root=data_save_path, use_condition_graph=False)
-train_idx, test_idx, _, _ = split_dataset_indices(dataset)
+train_idx, test_idx, _, _ = split_dataset_indices(dataset, random_seed=SEED)
 
 train_dataloader = DataLoader(
     Subset(dataset, train_idx),
@@ -62,7 +42,7 @@ train_dataloader = DataLoader(
     persistent_workers=False,
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
-    generator=g
+    generator=generator(SEED)
 )
 
 test_dataloader = DataLoader(
@@ -89,7 +69,7 @@ for epoch in tqdm(range(1, epochs + 1)):
     model.train()
     total_loss = 0
 
-    for batch in train_dataloader:
+    for batch in tqdm(train_dataloader):
         condition = batch['condition'].to(device)  # [B, T, 158]
         target = batch['target'].to(device)        # [B, T, 22]
         pred = model(condition)                    # [B, T, 22]

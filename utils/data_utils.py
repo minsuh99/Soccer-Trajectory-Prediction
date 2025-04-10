@@ -98,8 +98,8 @@ def split_dataset_indices(dataset, test_ratio=0.2, random_seed=42):
     test_match_ids = set(match_ids[:num_test_matches])
     train_match_ids = set(match_ids[num_test_matches:])
 
-    train_indices = [i for m in train_match_ids for i in match_to_indices[m]]
-    test_indices = [i for m in test_match_ids for i in match_to_indices[m]]
+    train_indices = sorted([i for m in train_match_ids for i in match_to_indices[m]])
+    test_indices = sorted([i for m in test_match_ids for i in match_to_indices[m]])
 
     return train_indices, test_indices, train_match_ids, test_match_ids
 
