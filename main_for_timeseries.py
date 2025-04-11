@@ -61,7 +61,7 @@ print("---Data Load!---")
 # 3. Model Define
 model = DefenseTrajectoryPredictor().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4)
 
 # 4. Train
 print("--- Train ---")

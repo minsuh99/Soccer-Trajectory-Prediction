@@ -72,7 +72,7 @@ csdi_config = {
 denoiser = diff_CSDI(csdi_config)
 model = DiffusionTrajectoryModel(denoiser, num_steps=csdi_config["num_steps"]).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4)
 
 # 4. Train
 print("--- Train ---")
