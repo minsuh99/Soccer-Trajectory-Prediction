@@ -1,7 +1,3 @@
-# 0331 working on
-# CSDI based diffusion denosing network
-# Fixing the problem about shape of data
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -91,9 +87,9 @@ class ResidualBlock(nn.Module):
         y = self.mid_projection(y)
 
         if cond_info is not None and self.cond_projection is not None:
-            B_c, _, K_c, L_c = cond_info.shape
-            cond_info = cond_info.reshape(B_c, cond_info.shape[1], K_c * L_c)
-            cond_info = self.cond_projection(cond_info)
+            B_c, H_c, K_c, L_c = cond_info.shape  # [B, 158, 11, 125]
+            cond_info = cond_info.reshape(B_c, H_c, K_c * L_c)  # [B, 158, 1375]
+            cond_info = self.cond_projection(cond_info)         # [B, 128, 1375]
             y = y + cond_info
 
         gate, filter = torch.chunk(y, 2, dim=1)
@@ -119,7 +115,7 @@ class diff_CSDI(nn.Module):
         self.input_projection = Conv1d_with_init(inputdim, self.channels, 1)
         self.output_projection1 = Conv1d_with_init(self.channels, self.channels, 1)
         self.output_projection2 = Conv1d_with_init(self.channels, self.output_dim, 1)
-        nn.init.zeros_(self.output_projection2.weight)
+        nn.init.xavier_uniform_(self.output_projection2.weight, gain=0.01)
         if self.output_projection2.bias is not None:
             nn.init.zeros_(self.output_projection2.bias)
 
@@ -136,7 +132,8 @@ class diff_CSDI(nn.Module):
         B, inputdim, K, L = x.shape  # [B, 2, 11, 125]
 
         x = x.reshape(B, inputdim, K * L)              # [B, 2, 1375]
-        x = F.relu(self.input_projection(x))           # [B, C, 1375]
+        x = self.input_projection(x)
+        x = F.relu(x)           # [B, C, 1375]
         x = x.reshape(B, self.channels, K, L)          # [B, C, 11, 125]
 
         diffusion_emb = self.diffusion_embedding(diffusion_step)
@@ -148,7 +145,9 @@ class diff_CSDI(nn.Module):
 
         x = torch.sum(torch.stack(skip), dim=0) / math.sqrt(len(self.residual_layers))  # [B, C, 11, 125]
 
-        x = F.relu(self.output_projection1(x.reshape(B, self.channels, K * L)))  # [B, C, 1375]
+        x = x.reshape(B, self.channels, K * L)  # [B, C, 1375]
+        x = self.output_projection1(x)
+        x = F.relu(x)
         x = self.output_projection2(x)  # [B, 2, 1375]
         x = x.reshape(B, self.output_dim, K, L)  # [B, 2, 11, 125]
         return x

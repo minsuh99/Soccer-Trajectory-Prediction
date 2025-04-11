@@ -310,7 +310,7 @@ class MultiMatchSoccerDataset(Dataset):
         condition_columns = sort_columns_by_original_order(condition_columns, self.column_order)
         condition_seq = condition_seq[condition_columns]
 
-        # Load player metadata from cached player_info.csv
+        # Load player metadata
         if not hasattr(self, "player_info_cache"):
             self.player_info_cache = {}
 
@@ -334,6 +334,14 @@ class MultiMatchSoccerDataset(Dataset):
             pitch = read_pitch_from_mat_info_xml(info_path)
             self.pitch_cache[match_id] = (pitch.length / 2, pitch.width / 2)
         x_scale, y_scale = self.pitch_cache[match_id]
+        
+        # Normalization for other columns
+        std_columns = ["vx", "vy", "dist", "ball_vx", "ball_vy"]
+        for col in std_columns:
+            if col in condition_seq.columns:
+                mean = condition_seq[col].mean()
+                std = condition_seq[col].std()
+                condition_seq[col] = (condition_seq[col] - mean) / std
 
         target_seq[target_columns[0::2]] = target_seq[target_columns[0::2]] / x_scale
         target_seq[target_columns[1::2]] = target_seq[target_columns[1::2]] / y_scale

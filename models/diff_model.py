@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# For Reproducability
 
 class DiffusionTrajectoryModel(nn.Module):
     def __init__(self, model, num_steps=1000, beta_start=1e-4, beta_end=0.02):
@@ -20,9 +19,9 @@ class DiffusionTrajectoryModel(nn.Module):
     def q_sample(self, x_0, t, noise=None):
         if noise is None:
             noise = torch.randn_like(x_0)
-        sqrt_alpha_hat = self.alpha_hat[t].view(-1, 1, 1, 1)
-        sqrt_one_minus = (1.0 - self.alpha_hat[t]).view(-1, 1, 1, 1)
-        x_t = torch.sqrt(sqrt_alpha_hat) * x_0 + torch.sqrt(sqrt_one_minus) * noise
+        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t]).view(-1, 1, 1, 1)
+        sqrt_one_minus = torch.sqrt(1.0 - self.alpha_hat[t]).view(-1, 1, 1, 1)
+        x_t = sqrt_alpha_hat * x_0 + sqrt_one_minus * noise
         return x_t, noise
 
     # Training step: predict noise from x_t
@@ -30,16 +29,24 @@ class DiffusionTrajectoryModel(nn.Module):
         B = x_0.size(0)
         t = torch.randint(0, self.num_steps, (B,), device=self.device).long()
         x_t, noise = self.q_sample(x_0, t)
-        
-        # Shape matching for diff_CSDI: [B, 2, 11, T]
         x_t = x_t.permute(0, 3, 2, 1)
         noise = noise.permute(0, 3, 2, 1)
         
-        cond_info = cond_info.to(self.device)
+        if cond_info is not None:
+            cond_info = cond_info.to(self.device)
 
         noise_pred = self.model(x_t, t, cond_info)
-        loss = F.mse_loss(noise_pred, noise)
-        return loss
+        noise_loss = F.mse_loss(noise_pred, noise)
+        
+        alpha_hat = self.alpha_hat[t].view(-1, 1, 1, 1)
+        x_0_pred = (x_t - torch.sqrt(1.0 - alpha_hat) * noise_pred) / torch.sqrt(alpha_hat)
+        x_0_pred = x_0_pred.permute(0, 3, 2, 1)  # [B, T, 11, 2]
+        x_0 = x_0.to(self.device)
+        
+        # player-wise loss
+        player_loss = F.mse_loss(x_0_pred, x_0, reduction='none')  # [B, T, 11, 2]
+        player_loss = player_loss.mean(dim=[1, 3]).mean()
+        return noise_loss, player_loss
 
 
     # Sampling (generate trajectory)

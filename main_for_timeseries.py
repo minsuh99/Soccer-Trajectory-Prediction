@@ -47,7 +47,7 @@ train_dataloader = DataLoader(
 
 test_dataloader = DataLoader(
     Subset(dataset, test_idx),
-    batch_size=batch_size,
+    batch_size=8,
     shuffle=False,
     num_workers=0,
     pin_memory=True,
