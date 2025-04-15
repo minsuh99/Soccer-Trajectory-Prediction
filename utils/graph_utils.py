@@ -2,25 +2,21 @@ import pandas as pd
 import torch
 from torch_geometric.data import HeteroData
 
-# Convert a single frame tensor to a pandas DataFrame
 def frame_tensor_to_df(frame_tensor, column_names):
     np_array = frame_tensor.cpu().numpy()
     df = pd.DataFrame([np_array], columns=column_names)
     return df
 
-# Extract node features (Attk, Def, Ball) from a single frame in the condition sequence
+# Node feature
 def extract_node_features_from_condition(condition_tensor, condition_columns):
-    # Map column names to their index
     column_index_map = {col: idx for idx, col in enumerate(condition_columns)}
 
-    # Get base names for players
     player_bases = sorted(list(set(col.rsplit("_", 1)[0] for col in condition_columns if "ball" not in col)))
     attk_bases = [base for base in player_bases if "Attk" in base or any(f"{base}_position" in col for col in condition_columns[:22*7])][:11]
     def_bases = [base for base in player_bases if base not in attk_bases][:11]
 
     node_features = {"Attk": [], "Def": []}
     
-   # Collect features for each attacker
     for base in attk_bases:
         feats = []
         for feat in ["x", "y", "vx", "vy", "dist", "position", "starter"]:
@@ -29,7 +25,6 @@ def extract_node_features_from_condition(condition_tensor, condition_columns):
             feats.append(val)
         node_features["Attk"].append(torch.stack(feats))
         
-    # Collect features for each defender
     for base in def_bases:
         feats = []
         for feat in ["x", "y", "vx", "vy", "dist", "position", "starter"]:
@@ -38,7 +33,6 @@ def extract_node_features_from_condition(condition_tensor, condition_columns):
             feats.append(val)
         node_features["Def"].append(torch.stack(feats))
 
-    # Collect ball features (x, y, vx, vy)
     ball_feats = []
     for feat in ["x", "y", "vx", "vy"]:
         col = f"ball_{feat}"
@@ -49,15 +43,21 @@ def extract_node_features_from_condition(condition_tensor, condition_columns):
     node_features["Attk"] = torch.stack(node_features["Attk"]) if node_features["Attk"] else torch.empty((0, 7))
     node_features["Def"] = torch.stack(node_features["Def"]) if node_features["Def"] else torch.empty((0, 7))
 
-    # Return features grouped by node type
     return node_features
 
-# Build edges between nodes
+# Edge
 def build_edges_based_on_interactions(node_features):
     edge_index_dict = {}
     edge_attr_dict = {}
+    
+    field_x_half = 52.5
+    field_y_half = 34.0
+    x_scale = 1.0 / field_x_half
+    y_scale = 1.0 / field_y_half
+    real_threshold = 20  # Distance-based weight (20 m)
 
-    # Helper function to add edges between two node types
+    normalized_threshold = (real_threshold**2 * x_scale**2 + real_threshold**2 * y_scale**2)**0.5
+
     def add_edges(src_type, dst_type, relation):
         src_tensor = node_features[src_type]
         dst_tensor = node_features[dst_type]
@@ -84,7 +84,6 @@ def build_edges_based_on_interactions(node_features):
         edge_index_dict[(src_type, relation, dst_type)] = edge_index
         edge_attr_dict[(src_type, relation, dst_type)] = edge_attr
 
-    # Add different interaction edges
     add_edges("Attk", "Attk", "interaction")
     add_edges("Attk", "Def", "interaction")
     add_edges("Def", "Def", "interaction")
@@ -93,7 +92,6 @@ def build_edges_based_on_interactions(node_features):
 
     return edge_index_dict, edge_attr_dict
 
-# Convert node features and edge information into a PyG HeteroData object
 def convert_to_hetero_graph(node_features, edge_index_dict, edge_attr_dict):
     data = HeteroData()
     for node_type, feats in node_features.items():
@@ -102,13 +100,10 @@ def convert_to_hetero_graph(node_features, edge_index_dict, edge_attr_dict):
         data[edge_type].edge_index = edge_index
         data[edge_type].edge_attr = edge_attr_dict[edge_type]
     return data
-
-# Build a sequence of heterogeneous graphs from the condition sequence
 def build_graph_sequence_from_condition(sample, data_root=None):
     condition = sample["condition"]     # [T, F]
     condition_columns = sample["condition_columns"]
 
-    # For each frame in the condition sequence, create a graph
     graph_seq = []
     for t in range(condition.shape[0]):
         node_feats = extract_node_features_from_condition(condition[t], condition_columns)

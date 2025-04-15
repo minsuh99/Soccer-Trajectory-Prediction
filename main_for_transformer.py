@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from torch.utils.data import DataLoader, Subset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from models.lstm_model import DefenseTrajectoryPredictor
+from models.transformer_model import DefenseTrajectoryTransformer
 from make_dataset import MultiMatchSoccerDataset, organize_and_process
 from utils.utils import set_evertyhing, worker_init_fn, generator, plot_trajectories_on_pitch
 from utils.data_utils import split_dataset_indices, custom_collate_fn
@@ -59,7 +59,7 @@ test_dataloader = DataLoader(
 print("---Data Load!---")
 
 # 3. Model Define
-model = DefenseTrajectoryPredictor().to(device)
+model = DefenseTrajectoryTransformer().to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4)
 
@@ -72,7 +72,7 @@ for epoch in tqdm(range(1, epochs + 1)):
     for batch in tqdm(train_dataloader):
         condition = batch['condition'].to(device)  # [B, T, 158]
         target = batch['target'].to(device)        # [B, T, 22]
-        pred = model(condition)                    # [B, T, 22]
+        pred = model(condition, target=target)                    # [B, T, 22]
 
         pred = pred.view(pred.shape[0], pred.shape[1], 11, 2)      # [B, T, 11, 2]
         target = target.view(target.shape[0], target.shape[1], 11, 2)
@@ -103,8 +103,8 @@ visualization_done = False
 with torch.no_grad():
     for batch in tqdm(test_dataloader):
         condition = batch['condition'].to(device)
-        target = batch['target'].to(device)  # [B, T, 22]
-        pred = model(condition)              # [B, T, 22]
+        target = batch['target'].to(device)
+        pred = model(condition, target = None) # Teacher forcing without GT
 
         pred = pred.view(pred.shape[0], pred.shape[1], 11, 2)
         target = target.view(target.shape[0], target.shape[1], 11, 2)
@@ -139,7 +139,7 @@ with torch.no_grad():
                 pred_vis = pred[i].cpu()
                 pitch_scale = batch["pitch_scale"][i]
 
-                save_path = f"results/LSTM_sample_{i:02d}.png"
+                save_path = f"results/Transformer_sample_{i:02d}.png"
                 plot_trajectories_on_pitch(others, target_vis, pred_vis, pitch_scale, save_path=save_path)
 
             visualization_done = True

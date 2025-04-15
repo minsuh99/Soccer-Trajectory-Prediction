@@ -7,13 +7,11 @@ class GraphAutoencoder(nn.Module):
     def __init__(self, in_dim_dict, hidden_dim, temporal_hidden_dim, out_dim):
         super().__init__()
 
-        # 1. Node Feature Projection
         self.node_proj = nn.ModuleDict({
             k: nn.Linear(sum(in_dim_dict[k]), hidden_dim) for k in in_dim_dict
         })
 
-        # 2. Spatial Encoder (HeteroConv)
-        self.spatial_gnn = HeteroConv({
+        self.spatial_encoding = HeteroConv({
             ('Attk', 'interaction', 'Attk'): GCNConv(hidden_dim, hidden_dim, add_self_loops=False),
             ('Attk', 'interaction', 'Def'): GCNConv(hidden_dim, hidden_dim, add_self_loops=False),
             ('Def', 'interaction', 'Def'): GCNConv(hidden_dim, hidden_dim, add_self_loops=False),
@@ -21,8 +19,7 @@ class GraphAutoencoder(nn.Module):
             ('Def', 'interaction', 'Ball'): GCNConv(hidden_dim, hidden_dim, add_self_loops=False)
         }, aggr='sum')
 
-        # 3. Temporal Encoder (GRU)
-        self.temporal_rnn = nn.GRU(
+        self.temporal_encoding = nn.GRU(
             input_size=hidden_dim, hidden_size=temporal_hidden_dim, batch_first=True
         )
 
@@ -45,7 +42,7 @@ class GraphAutoencoder(nn.Module):
             features = [data[node_type][key] for key in data[node_type].keys()]
             x_cat = torch.cat(features, dim=-1)
             x_dict[node_type] = self.node_proj[node_type](x_cat)
-        z_dict = self.spatial_gnn(x_dict, data.edge_index_dict)
+        z_dict = self.spatial_encoding(x_dict, data.edge_index_dict)
         return z_dict
 
     def forward(self, graph_seq):
@@ -58,12 +55,12 @@ class GraphAutoencoder(nn.Module):
 
         pooled = []
         for k in z_seq_dict:
-            z_seq = torch.stack(z_seq_dict[k], dim=1)  # [N, T, d]
-            _, h_n = self.temporal_rnn(z_seq)         # [1, N, d_t]
-            h_last = h_n.squeeze(0).mean(dim=0)       # [d_t]
+            z_seq = torch.stack(z_seq_dict[k], dim=1)
+            _, h_n = self.temporal_encoding(z_seq)
+            h_last = h_n.squeeze(0).mean(dim=0) 
             pooled.append(h_last)
 
-        H = self.h_proj(torch.cat(pooled, dim=-1))    # [out_dim]
+        H = self.h_proj(torch.cat(pooled, dim=-1))
         return H
 
     def decode_from_H(self, H, data):
