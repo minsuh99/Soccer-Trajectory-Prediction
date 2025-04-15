@@ -34,7 +34,7 @@ else:
     print("Skip organize_and_process")
 
 dataset = MultiMatchSoccerDataset(data_root=data_save_path, use_condition_graph=False)
-train_idx, test_idx, _, _ = split_dataset_indices(dataset, random_seed=SEED)
+train_idx, val_idx, test_idx = split_dataset_indices(dataset, val_ratio=1/6, test_ratio=1/6, random_seed=SEED)
 
 train_dataloader = DataLoader(
     Subset(dataset, train_idx),
@@ -46,6 +46,17 @@ train_dataloader = DataLoader(
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
     generator=generator(SEED)
+)
+
+val_dataloader = DataLoader(
+    Subset(dataset, val_idx),
+    batch_size=batch_size,
+    shuffle=False,
+    num_workers=num_workers,
+    pin_memory=True,
+    persistent_workers=False,
+    collate_fn=custom_collate_fn,
+    worker_init_fn=worker_init_fn,
 )
 
 test_dataloader = DataLoader(
@@ -75,7 +86,9 @@ optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4)
 
 # 4. Train
-print("--- Train ---")
+best_state_dict = None
+best_val_loss = float("inf")
+
 for epoch in tqdm(range(1, epochs + 1)):
     model.train()
     total_noise_loss = 0.0
@@ -83,7 +96,7 @@ for epoch in tqdm(range(1, epochs + 1)):
     total_loss = 0.0
     num_batches = len(train_dataloader)
 
-    for batch in train_dataloader:
+    for batch in tqdm(train_dataloader, desc="Training"):
         cond = batch["condition"].to(device)  # [B, T, 158]
         target = batch["target"].to(device).view(-1, cond.shape[1], 11, 2)  # [B, T, 11, 2]
         cond = cond.permute(0, 2, 1).unsqueeze(2).expand(-1, -1, 11, -1)  # [B, 158, 11, T]
@@ -107,12 +120,37 @@ for epoch in tqdm(range(1, epochs + 1)):
 
     tqdm.write(f"[Epoch {epoch}] Cost: {avg_total_loss:.6f} | Noise Loss: {avg_noise_loss:.6f} | player_loss: {avg_player_loss:.6f} | LR: {scheduler.get_last_lr()[0]:.6f}")
     scheduler.step(avg_total_loss)
+    
+    # --- Validation ---
+    model.eval()
+    val_noise_loss = 0.0
+    val_player_loss = 0.0
+    val_total_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(val_dataloader, desc="Validation"):
+            cond = batch["condition"].to(device)
+            target = batch["target"].to(device).view(-1, cond.shape[1], 11, 2)
+            cond = cond.permute(0, 2, 1).unsqueeze(2).expand(-1, -1, 11, -1)
+            
+            cond = None  # 현재 cond 미사용 시 유지
 
+            noise_loss, player_loss = model(target, cond_info=cond)
+            loss = noise_loss + player_loss
+            val_noise_loss += noise_loss.item()
+            val_player_loss += player_loss.item()
+            val_total_loss += loss.item()
 
-print("---Train finished!---")
+    avg_val_total_loss = val_total_loss / len(val_dataloader)
+
+    tqdm.write(f"[Epoch {epoch}] Train Loss: {avg_total_loss:.6f}, Val Loss: {avg_val_total_loss:.6f}, LR: {scheduler.get_last_lr()[0]:.6f}")
+    scheduler.step(avg_val_total_loss)
+
+    if avg_val_total_loss < best_val_loss:
+        best_val_loss = avg_val_total_loss
+        best_state_dict = model.state_dict()
 
 # 5. Inference (Best-of-N Sampling) & Visualization
-print("--- Inference ---")
+model.load_state_dict(best_state_dict)
 model.eval()
 all_ade = []
 all_fde = []
@@ -120,7 +158,7 @@ visualize_samples = 5
 visualization_done = False
 
 with torch.no_grad():
-    for batch in tqdm(test_dataloader):
+    for batch in tqdm(test_dataloader, desc="Inference"):
         # Inference
         cond = batch["condition"].to(device)   # [B, T, 158]
         target = batch["target"].to(device).view(-1, cond.shape[1], 11, 2)  # [B, T, 11, 2]

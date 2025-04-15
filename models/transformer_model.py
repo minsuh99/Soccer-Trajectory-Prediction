@@ -18,7 +18,7 @@ class PositionalEncoding(nn.Module):
 
 
 class DefenseTrajectoryTransformer(nn.Module):
-    def __init__(self, input_dim=158, hidden_dim=256, output_dim=22, projection_dim=64, num_layers=4, nhead=8, dropout=0.1, seq_len=125):
+    def __init__(self, input_dim=158, hidden_dim=256, output_dim=22, projection_dim=64, num_layers=4, nhead=8, seq_len=125):
         super().__init__()
 
         self.encoder_input_proj = nn.Linear(input_dim, hidden_dim)
@@ -30,7 +30,7 @@ class DefenseTrajectoryTransformer(nn.Module):
             d_model=hidden_dim,
             nhead=nhead,
             dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
+            dropout=0.2,
             activation='gelu',
             batch_first=True
         )
@@ -40,7 +40,7 @@ class DefenseTrajectoryTransformer(nn.Module):
             d_model=hidden_dim,
             nhead=nhead,
             dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
+            dropout=0.2,
             activation='gelu',
             batch_first=True
         )
@@ -49,6 +49,7 @@ class DefenseTrajectoryTransformer(nn.Module):
         self.output_proj = nn.Sequential(
             nn.Linear(hidden_dim, projection_dim),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(projection_dim, output_dim)
         )
 

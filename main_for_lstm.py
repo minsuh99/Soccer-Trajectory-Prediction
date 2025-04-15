@@ -31,7 +31,7 @@ else:
     print("Skip organize_and_process")
 
 dataset = MultiMatchSoccerDataset(data_root=data_save_path, use_condition_graph=False)
-train_idx, test_idx, _, _ = split_dataset_indices(dataset, random_seed=SEED)
+train_idx, val_idx, test_idx = split_dataset_indices(dataset, val_ratio=1/6, test_ratio=1/6, random_seed=SEED)
 
 train_dataloader = DataLoader(
     Subset(dataset, train_idx),
@@ -43,6 +43,17 @@ train_dataloader = DataLoader(
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
     generator=generator(SEED)
+)
+
+val_dataloader = DataLoader(
+    Subset(dataset, val_idx),
+    batch_size=batch_size,
+    shuffle=False,
+    num_workers=num_workers,
+    pin_memory=True,
+    persistent_workers=False,
+    collate_fn=custom_collate_fn,
+    worker_init_fn=worker_init_fn,
 )
 
 test_dataloader = DataLoader(
@@ -64,15 +75,17 @@ optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4)
 
 # 4. Train
-print("--- Train ---")
+best_state_dict = None
+best_val_loss = float("inf")
+
 for epoch in tqdm(range(1, epochs + 1)):
     model.train()
-    total_loss = 0
+    train_loss = 0
 
-    for batch in tqdm(train_dataloader):
+    for batch in tqdm(train_dataloader, desc="Training"):
         condition = batch['condition'].to(device)  # [B, T, 158]
         target = batch['target'].to(device)        # [B, T, 22]
-        pred = model(condition, target=target)                    # [B, T, 22]
+        pred = model(condition, target=target)     # Teacher forcing with GT
 
         pred = pred.view(pred.shape[0], pred.shape[1], 11, 2)      # [B, T, 11, 2]
         target = target.view(target.shape[0], target.shape[1], 11, 2)
@@ -83,16 +96,36 @@ for epoch in tqdm(range(1, epochs + 1)):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        total_loss += loss.item()
+        train_loss += loss.item()
+    
+    avg_train_loss = train_loss / len(train_dataloader)
+        
+    # --- Validation ---
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for batch in tqdm(val_dataloader, desc="Validation"):
+            condition = batch['condition'].to(device)
+            target = batch['target'].to(device)
 
-    avg_loss = total_loss / len(train_dataloader)
-    tqdm.write(f"[Epoch {epoch}] Train Loss: {avg_loss:.6f}, Current LR: {scheduler.get_last_lr()[0]:.6f}")
-    scheduler.step(avg_loss)
+            pred = model(condition, target=target)
+            pred = pred.view(pred.shape[0], pred.shape[1], 11, 2)
+            target = target.view(target.shape[0], target.shape[1], 11, 2)
 
-print("---Train finished!---")
+            mse = ((pred - target) ** 2).mean(dim=(1, 2, 3))  # [B]
+            loss = mse.mean()
+            val_loss += loss.item()
+
+    avg_val_loss = val_loss / len(val_dataloader)
+    tqdm.write(f"[Epoch {epoch}] Train Loss: {avg_train_loss:.6f}, Validation Loss: {avg_val_loss:.6f} Current LR: {scheduler.get_last_lr()[0]:.6f}, target_mean: {target.mean():.4f}, pred_mean: {pred.mean():.4f}")
+    scheduler.step(avg_val_loss)
+    
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        best_state_dict = model.state_dict()
 
 # 5. Inference ＆ Visualization
-print("--- Inference ---")
+model.load_state_dict(best_state_dict)
 model.eval()
 all_ade = []
 all_fde = []
@@ -101,7 +134,7 @@ visualize_samples = 5
 visualization_done = False
 
 with torch.no_grad():
-    for batch in tqdm(test_dataloader):
+    for batch in tqdm(test_dataloader, desc="Inference"):
         condition = batch['condition'].to(device)
         target = batch['target'].to(device)
         pred = model(condition, target = None) # Teacher forcing without GT

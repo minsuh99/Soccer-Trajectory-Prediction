@@ -82,7 +82,7 @@ def infer_starters_from_tracking(df_tracking, team_prefix, num_players, offset=0
 
 
 # Split dataset indices into train/test sets by match ID
-def split_dataset_indices(dataset, test_ratio=0.2, random_seed=42):
+def split_dataset_indices(dataset, val_ratio=(1/6), test_ratio=(1/6), random_seed=42):
     match_to_indices = defaultdict(list)
     for idx, (match_id, _, _, _) in enumerate(dataset.samples):
         match_to_indices[match_id].append(idx)
@@ -93,16 +93,19 @@ def split_dataset_indices(dataset, test_ratio=0.2, random_seed=42):
     random.shuffle(match_ids)
 
     num_matches = len(match_ids)
+    num_val_matches = max(1, int(num_matches * val_ratio))
     num_test_matches = max(1, int(num_matches * test_ratio))
+    num_train_matches = num_matches - num_val_matches - num_test_matches
 
-    test_match_ids = set(match_ids[:num_test_matches])
-    train_match_ids = set(match_ids[num_test_matches:])
+    train_match_ids = set(match_ids[:num_train_matches])
+    val_match_ids   = set(match_ids[num_train_matches:num_train_matches + num_val_matches])
+    test_match_ids  = set(match_ids[num_train_matches + num_val_matches:])
 
     train_indices = sorted([i for m in train_match_ids for i in match_to_indices[m]])
-    test_indices = sorted([i for m in test_match_ids for i in match_to_indices[m]])
+    val_indices   = sorted([i for m in val_match_ids   for i in match_to_indices[m]])
+    test_indices  = sorted([i for m in test_match_ids  for i in match_to_indices[m]])
 
-    return train_indices, test_indices, train_match_ids, test_match_ids
-
+    return train_indices, val_indices, test_indices
 
 # Custom collate function to batch graph sequences and tensors
 def custom_collate_fn(batch):
