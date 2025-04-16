@@ -1,35 +1,57 @@
 import pandas as pd
 import torch
 from torch_geometric.data import HeteroData
+import os
+from tqdm import tqdm
 
 def frame_tensor_to_df(frame_tensor, column_names):
     np_array = frame_tensor.cpu().numpy()
     df = pd.DataFrame([np_array], columns=column_names)
     return df
 
-# Node feature
-def extract_node_features_from_condition(condition_tensor, condition_columns):
-    column_index_map = {col: idx for idx, col in enumerate(condition_columns)}
+def get_global_dist_min_max(dataset):
+    all_dists = []
+    for sample in dataset:
+        cond = sample["condition"]  # [T, F]
+        cols = sample["condition_columns"]
 
+        for t in range(cond.shape[0]):
+            for col in cols:
+                if col.endswith("_dist"):
+                    val = cond[t, cols.index(col)].item()
+                    all_dists.append(val)
+
+    all_dists_tensor = torch.tensor(all_dists)
+    return all_dists_tensor.min().item(), all_dists_tensor.max().item()
+# Node feature
+def extract_node_features_from_condition(condition_tensor, condition_columns, dist_min=0.0, dist_max=6000.0):
+    column_index_map = {col: idx for idx, col in enumerate(condition_columns)}
     player_bases = sorted(list(set(col.rsplit("_", 1)[0] for col in condition_columns if "ball" not in col)))
     attk_bases = [base for base in player_bases if "Attk" in base or any(f"{base}_position" in col for col in condition_columns[:22*7])][:11]
     def_bases = [base for base in player_bases if base not in attk_bases][:11]
 
     node_features = {"Attk": [], "Def": []}
-    
+
+    def normalize_dist(val):
+        return (val - dist_min) / (dist_max - dist_min + 1e-6)
+
     for base in attk_bases:
         feats = []
         for feat in ["x", "y", "vx", "vy", "dist", "position", "starter"]:
             col = f"{base}_{feat}"
             val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
+            if feat == "dist":
+                val = normalize_dist(val)
             feats.append(val)
         node_features["Attk"].append(torch.stack(feats))
-        
+
     for base in def_bases:
         feats = []
         for feat in ["x", "y", "vx", "vy", "dist", "position", "starter"]:
             col = f"{base}_{feat}"
             val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
+            if feat == "dist":
+                val = normalize_dist(val)
             feats.append(val)
         node_features["Def"].append(torch.stack(feats))
 
@@ -100,6 +122,7 @@ def convert_to_hetero_graph(node_features, edge_index_dict, edge_attr_dict):
         data[edge_type].edge_index = edge_index
         data[edge_type].edge_attr = edge_attr_dict[edge_type]
     return data
+
 def build_graph_sequence_from_condition(sample, data_root=None):
     condition = sample["condition"]     # [T, F]
     condition_columns = sample["condition_columns"]
@@ -112,3 +135,18 @@ def build_graph_sequence_from_condition(sample, data_root=None):
         graph_seq.append(graph)
 
     return graph_seq
+
+def save_condition_graphs_for_dataset(dataset, indices, save_root="graph_cache"):
+    os.makedirs(save_root, exist_ok=True)
+    cache = {}
+    for idx in tqdm(indices, desc="Saving graph sequences"):
+        sample = dataset[idx]
+        match_id = sample["match_id"]
+        segment_id = f"{match_id}_{sample['condition_frames'][0]}"
+
+        if segment_id in cache:
+            continue
+
+        graph_seq = build_graph_sequence_from_condition(sample)
+        torch.save(graph_seq, os.path.join(save_root, f"{segment_id}.pt"))
+        cache[segment_id] = True

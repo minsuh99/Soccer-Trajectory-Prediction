@@ -169,14 +169,12 @@ def organize_and_process(data_path, save_path):
 
 
 class MultiMatchSoccerDataset(Dataset):
-    def __init__(self, data_root, segment_length=250, condition_length=125, 
-                 framerate=25, stride=25, use_condition_graph=False):
+    def __init__(self, data_root, segment_length=250, condition_length=125, framerate=25, stride=25):
         self.data_root = data_root
         self.segment_length = segment_length
         self.condition_length = condition_length
         self.framerate = framerate
         self.stride = stride
-        self.use_condition_graph = use_condition_graph
         self.samples = []
         self.match_data = {}
         self.load_all_matches(data_root)
@@ -386,8 +384,6 @@ class MultiMatchSoccerDataset(Dataset):
             "target_frames": list(target_seq.index),
             "pitch_scale": (x_scale, y_scale)
         }
-        if self.use_condition_graph:
-            sample["condition_graph_seq"] = build_graph_sequence_from_condition(sample, data_root=self.data_root)
         return sample
 
 
@@ -423,8 +419,5 @@ if __name__ == "__main__":
     
     print("Condition:", sample["condition"])
     print("Target:", sample["target"])
-    
-    print("Length of condition graph seq:", len(sample["condition_graph_seq"]))
-    print("Example of condition graph:", sample["condition_graph_seq"][:1] )
     
     

@@ -15,7 +15,7 @@ data_save_path = "match_data"
 batch_size = 64
 num_workers = 8
 epochs = 100
-learning_rate = 1e-4
+learning_rate = 1e-3
 SEED = 42
 
 set_evertyhing(SEED)
@@ -37,7 +37,7 @@ train_dataloader = DataLoader(
     shuffle=True,
     num_workers=num_workers,
     pin_memory=True,
-    persistent_workers=False,
+    persistent_workers=True,
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
     generator=generator(SEED)
@@ -71,7 +71,6 @@ for batch in tqdm(train_dataloader, desc="Check"):
 
     first_frame = condition_seq[0]
     print("First frame type:", type(first_frame))
-
     print(" - Node types:", first_frame.node_types)
     print(" - Edge types:", first_frame.edge_types)
 
@@ -79,8 +78,6 @@ for batch in tqdm(train_dataloader, desc="Check"):
         print(f"   {node_type} - x :", first_frame[node_type].x)
 
     break
-
-
 
 # 4. 학습 루프
 print("Training Autoencoder...")
@@ -96,13 +93,14 @@ for epoch in tqdm(range(num_epochs), desc="Training"):
 
         optimizer.zero_grad()
         H = model(graph_seq)
-        loss = model.decode_from_H(H, last_frame)  # self-supervised loss
+        conti_loss, cat_loss, edge_loss = model.decode_from_H(H, last_frame)  # self-supervised loss
+        loss = conti_loss + cat_loss + edge_loss
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
 
     avg_loss = total_loss / len(train_dataloader)
-    tqdm.write(f"[Epoch {epoch+1}] Avg Loss: {avg_loss:.4f}")
+    tqdm.write(f"[Loss Breakdown] Continuous: {conti_loss:.4f} | Categorical: {cat_loss:.4f} | Edge: {edge_loss:.4f}")
 
 torch.save(model.state_dict(), "pretrained_graph_autoencoder.pt")

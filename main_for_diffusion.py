@@ -33,7 +33,7 @@ if not os.path.exists(data_save_path) or len(os.listdir(data_save_path)) == 0:
 else:
     print("Skip organize_and_process")
 
-dataset = MultiMatchSoccerDataset(data_root=data_save_path, use_condition_graph=False)
+dataset = MultiMatchSoccerDataset(data_root=data_save_path)
 train_idx, val_idx, test_idx = split_dataset_indices(dataset, val_ratio=1/6, test_ratio=1/6, random_seed=SEED)
 
 train_dataloader = DataLoader(

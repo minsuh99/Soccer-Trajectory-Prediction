@@ -31,11 +31,14 @@ class GraphAutoencoder(nn.Module):
 
         self.node_decoder = nn.ModuleDict({
             k: nn.ModuleDict({
-                "continuous": nn.Linear(temporal_hidden_dim, 5),     # x, y, vx, vy, dist
-                "position": nn.Linear(temporal_hidden_dim, 24),      # 포지션 logits
-                "starter": nn.Linear(temporal_hidden_dim, 1)         # 선발 여부 (binary)
+                "continuous": nn.Linear(temporal_hidden_dim, 4)
+            }) if k == "Ball" else nn.ModuleDict({
+                "continuous": nn.Linear(temporal_hidden_dim, 5),
+                "position": nn.Linear(temporal_hidden_dim, 24),
+                "starter": nn.Linear(temporal_hidden_dim, 1)
             }) for k in in_dim_dict
         })
+
 
     def encode_frame(self, data):
         x_dict = {}
@@ -72,46 +75,46 @@ class GraphAutoencoder(nn.Module):
 
         continuous_loss = 0.0
         categorical_loss = 0.0
-
+        
         for k in z_final_hat:
             z = z_final_hat[k]
             x_gt = data[k].x.to(H.device)
 
-            x_hat_cont = self.node_decoder[k]["continuous"](z)
-            x_hat_pos = self.node_decoder[k]["position"](z)    # [N, 24]
-            x_hat_starter = self.node_decoder[k]["starter"](z) # [N, 1]
+            if k in ["Attk", "Def"]:
+                x_hat_cont = self.node_decoder[k]["continuous"](z)
+                x_hat_pos = self.node_decoder[k]["position"](z)
+                x_hat_starter = self.node_decoder[k]["starter"](z)
 
-            # --- Continuous loss ---
-            continuous_loss += F.mse_loss(x_hat_cont, x_gt[:, :5])
+                continuous_loss += F.huber_loss(x_hat_cont, x_gt[:, :5])
+                hub_x_y = F.huber_loss(x_hat_cont[:, :2], x_gt[:, :2])
+                hub_vel = F.huber_loss(x_hat_cont[:, 2:4], x_gt[:, 2:4])
+                hub_dist = F.huber_loss(x_hat_cont[:, 4], x_gt[:, 4])
+                continuous_loss += hub_x_y + hub_vel + hub_dist
+                
+                categorical_loss += F.cross_entropy(x_hat_pos, x_gt[:, 5].long())  # position loss
+                categorical_loss += F.binary_cross_entropy_with_logits(x_hat_starter.squeeze(-1), x_gt[:, 6].float())  # starter loss
 
-            # --- Categorical (multi-class: position) ---
-            position_label = x_gt[:, 5].long()  # (1~23)
-            categorical_loss += F.cross_entropy(x_hat_pos, position_label)
+            elif k == "Ball":
+                x_hat_ball = self.node_decoder[k]["continuous"](z)
+                continuous_loss += F.hub_loss(x_hat_ball, x_gt)
 
-            # --- Categorical (binary: starter 여부) ---
-            starter_label = x_gt[:, 6]
-            categorical_loss += F.binary_cross_entropy_with_logits(
-                x_hat_starter.squeeze(-1), starter_label.float()
-            )
-
-        # --- Edge loss 그대로 유지 ---
         edge_loss = 0.0
+
         for (src, _, dst), edge_index in data.edge_index_dict.items():
-            z_src, z_dst = z_final_hat[src], z_final_hat[dst]
-            u, v = edge_index
-            pos_score = (z_src[u] * z_dst[v]).sum(dim=-1)
-            pos_label = torch.ones_like(pos_score)
+            z_src = z_final_hat[src]  # [N_src, D]
+            z_dst = z_final_hat[dst]  # [N_dst, D]
+            u, v = edge_index  # [2, E]
 
-            u_neg = torch.randint(0, z_src.size(0), (u.size(0),), device=u.device)
-            v_neg = torch.randint(0, z_dst.size(0), (v.size(0),), device=v.device)
-            neg_score = (z_src[u_neg] * z_dst[v_neg]).sum(dim=-1)
-            neg_label = torch.zeros_like(neg_score)
+            # 예측: interaction weight
+            pred_weight = (z_src[u] * z_dst[v]).sum(dim=-1)  # [E]
 
-            score = torch.cat([pos_score, neg_score], dim=0)
-            label = torch.cat([pos_label, neg_label], dim=0)
-            edge_loss += F.binary_cross_entropy_with_logits(score, label)
+            # GT: 실제 edge weight (interaction strength)
+            edge_attr = data[(src, "interaction", dst)].edge_attr.view(-1).to(pred_weight.device)  # [E]
 
-        return continuous_loss + categorical_loss + edge_loss
+            # 회귀 손실
+            edge_loss += F.hub_loss(pred_weight, edge_attr)
+
+        return continuous_loss, categorical_loss, edge_loss
 
 
 
