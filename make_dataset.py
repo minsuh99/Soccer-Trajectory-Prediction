@@ -397,7 +397,7 @@ class MultiMatchSoccerDataset(Dataset):
             "pitch_scale": (x_scale, y_scale)
         }
         
-        sample["graph_condition_vector_H"] = build_graph_sequence_from_condition({
+        sample["graph"] = build_graph_sequence_from_condition({
             "condition": sample["condition"],
             "condition_columns": sample["condition_columns"]
         })

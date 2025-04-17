@@ -180,7 +180,7 @@ with torch.no_grad():
     for batch in tqdm(test_dataloader, desc="Inference"):
         cond = batch["condition"].to(device)
         target = batch["target"].to(device).view(-1, cond.size(1), 11, 2)
-        graph_batch = batch["graph"].to(device)
+        graph_batch = batch["graph_condition_vector_H"].to(device)
         B = cond.size(0)
 
         H = graph_encoder(graph_batch)

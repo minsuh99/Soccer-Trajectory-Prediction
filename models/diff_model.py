@@ -18,10 +18,12 @@ class DiffusionTrajectoryModel(nn.Module):
 
     def q_sample(self, x_0, t, noise=None):
         device = x_0.device
+        alpha_hat = self.alpha_hat.to(device)
+        
         if noise is None:
-            noise = torch.randn_like(x_0, device=device)
+            noise = torch.randn_like(x_0)
         t = t.to(device)
-        a_hat = self.alpha_hat[t].to(device).view(-1, 1, 1, 1)
+        a_hat = alpha_hat[t].view(-1, 1, 1, 1)
         one_minus = 1.0 - a_hat
         x_t = torch.sqrt(a_hat) * x_0 + torch.sqrt(one_minus) * noise
         return x_t, noise
@@ -29,7 +31,7 @@ class DiffusionTrajectoryModel(nn.Module):
     def forward(self, x_0, cond_info=None):
         device = x_0.device
         B = x_0.size(0)
-        t = torch.randint(0, self.num_steps, (B,), device=device).long()
+        t = torch.randint(0, self.num_steps, (B,), device=device)
 
         # x_0 -> x_t
         x_t, noise = self.q_sample(x_0, t)
@@ -44,7 +46,8 @@ class DiffusionTrajectoryModel(nn.Module):
         noise_loss = F.mse_loss(noise_pred, noise)
 
         # x_t -> x_0
-        a_hat = self.alpha_hat[t].to(device).view(-1, 1, 1, 1)
+        alpha_hat = self.alpha_hat.to(device)
+        a_hat = alpha_hat[t].view(-1, 1, 1, 1)
         x_0_pred = (x_t - torch.sqrt(1.0 - a_hat) * noise_pred) / torch.sqrt(a_hat)
         x_0_pred = x_0_pred.permute(0, 3, 2, 1)  # [B, T, 11, 2]
 
@@ -58,7 +61,11 @@ class DiffusionTrajectoryModel(nn.Module):
     @torch.no_grad()
     def generate(self, shape, cond_info=None, num_samples=10):
         B, T, N, D = shape
-        device = self.alpha_hat.device
+        device = next(self.parameters()).device
+        
+        betas = self.betas.to(device)
+        alphas = self.alphas.to(device)
+        alpha_hat = self.alpha_hat.to(device)
 
         if cond_info is not None:
             cond_info = cond_info.to(device)
@@ -67,18 +74,18 @@ class DiffusionTrajectoryModel(nn.Module):
         x_t = torch.randn((num_samples * B, T, N, D), device=device)
         x_t = x_t.permute(0, 3, 2, 1)  # [N*B, 2, 11, T]
 
-        for ti in reversed(range(self.num_steps)):
-            t_tensor = torch.full((num_samples * B,), ti, device=device, dtype=torch.long)
+        for t_i in reversed(range(self.num_steps)):
+            t_tensor = torch.full((num_samples * B,), t_i, device=device, dtype=torch.long)
             noise_pred = self.model(x_t, t_tensor, cond_info)
 
-            a = self.alphas[ti].to(device)
-            a_hat = self.alpha_hat[ti].to(device)
-            b = self.betas[ti].to(device)
+            a = alphas[t_i]
+            a_hat = alpha_hat[t_i]
+            b = betas[t_i]
 
-            if ti > 0:
-                noise = torch.randn_like(x_t, device=device)
+            if t_i > 0:
+                noise = torch.randn_like(x_t)
             else:
-                noise = torch.zeros_like(x_t, device=device)
+                noise = torch.zeros_like(x_t)
 
             x_t = (1 / torch.sqrt(a)) * (
                 x_t - ((1 - a) / torch.sqrt(1 - a_hat)) * noise_pred

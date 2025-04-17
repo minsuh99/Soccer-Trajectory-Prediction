@@ -28,6 +28,8 @@ def get_global_dist_min_max(dataset):
 
 def extract_node_features(condition_tensor, condition_columns):
     column_index_map = {col: idx for idx, col in enumerate(condition_columns)}
+    device = condition_tensor.device
+    dtype  = condition_tensor.dtype
     player_bases = sorted(list(set(col.rsplit("_", 1)[0] for col in condition_columns if "ball" not in col)))
     attk_bases = [base for base in player_bases if "Attk" in base or any(f"{base}_position" in col for col in condition_columns[:22*7])][:11]
     def_bases = [base for base in player_bases if base not in attk_bases][:11]
@@ -38,15 +40,27 @@ def extract_node_features(condition_tensor, condition_columns):
         feats = []
         for feat in ["x", "y", "vx", "vy"]:
             col = f"{base}_{feat}"
-            val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
+            if col in column_index_map:
+                val = condition_tensor[column_index_map[col]]
+            else:
+                val = torch.tensor(0.0, device=device, dtype=dtype)
             feats.append(val)
         col = f"{base}_dist"
-        feats.append(condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(-1.0))
+        if col in column_index_map:
+            feats.append(condition_tensor[column_index_map[col]])
+        else:
+            feats.append(torch.tensor(-1.0, device=device, dtype=dtype))
         col = f"{base}_position"
-        feats.append(condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(-1.0))
+        if col in column_index_map:
+            feats.append(condition_tensor[column_index_map[col]])
+        else:
+            feats.append(torch.tensor(-1.0, device=device, dtype=dtype))
         col = f"{base}_starter"
-        feats.append(condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(-1.0))
-        feats.append(torch.tensor(float(node_type_idx)))
+        if col in column_index_map:
+            feats.append(condition_tensor[column_index_map[col]])
+        else:
+            feats.append(torch.tensor(-1.0, device=device, dtype=dtype))
+        feats.append(torch.tensor(float(node_type_idx), device=device, dtype=dtype))
         return torch.stack(feats)
 
     for base in attk_bases:
@@ -60,8 +74,8 @@ def extract_node_features(condition_tensor, condition_columns):
         col = f"ball_{feat}"
         val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
         ball_feats.append(val)
-    ball_feats += [torch.tensor(-1.0)] * 3  # dist, position, starter
-    ball_feats.append(torch.tensor(2.0))    # node_type
+    ball_feats += [torch.tensor(-1.0, device=device, dtype=dtype)] * 3  # dist, position, starter
+    ball_feats.append(torch.tensor(2.0, device=device, dtype=dtype))    # node_type
     unified_feats.append(torch.stack(ball_feats))
 
     return {"Node": torch.stack(unified_feats)}

@@ -107,14 +107,12 @@ def split_dataset_indices(dataset, val_ratio=(1/6), test_ratio=(1/6), random_see
 
     return train_indices, val_indices, test_indices
 
-# Custom collate function to batch graph sequences and tensors
+# Custom collate function to batch
 def custom_collate_fn(batch):
     collated = {}
     for key in batch[0]:
-        if key == "condition_graph_seq":
-            transposed = list(zip(*[b["condition_graph_seq"] for b in batch]))  # [T x B]
-            collated_graphs = [GeoBatch.from_data_list(timestep_graphs) for timestep_graphs in transposed]
-            collated[key] = collated_graphs
+        if key == "graph":
+            collated[key] = GeoBatch.from_data_list([b["graph"] for b in batch])
         elif key == "pitch_scale":
             collated[key] = [b["pitch_scale"] for b in batch]
         else:
