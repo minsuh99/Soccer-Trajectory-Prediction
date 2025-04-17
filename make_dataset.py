@@ -334,12 +334,24 @@ class MultiMatchSoccerDataset(Dataset):
         x_scale, y_scale = self.pitch_cache[match_id]
         
         # Normalization for other columns
-        std_columns = ["vx", "vy", "dist", "ball_vx", "ball_vy"]
-        for col in std_columns:
-            if col in condition_seq.columns:
-                mean = condition_seq[col].mean()
-                std = condition_seq[col].std()
+        # suffixes 는 기존과 동일
+        suffixes = ("_vx", "_vy", "_dist", "ball_vx", "ball_vy")
+        norm_cols = [c for c in condition_seq.columns if c.endswith(suffixes)]
+
+        for col in norm_cols:
+            # 1) pandas Series 를 numpy array 로 변환
+            vals = condition_seq[col].to_numpy(dtype=float)  
+
+            # 2) numpy 로 mean/std 계산 (둘 다 스칼라)
+            mean = vals.mean()
+            std  = vals.std(ddof=0)
+
+            # 3) 스칼라 bool 비교
+            if std > 0.0:
                 condition_seq[col] = (condition_seq[col] - mean) / std
+            else:
+                condition_seq[col] = 0.0
+
 
         target_seq[target_columns[0::2]] = target_seq[target_columns[0::2]] / x_scale
         target_seq[target_columns[1::2]] = target_seq[target_columns[1::2]] / y_scale
@@ -384,6 +396,12 @@ class MultiMatchSoccerDataset(Dataset):
             "target_frames": list(target_seq.index),
             "pitch_scale": (x_scale, y_scale)
         }
+        
+        sample["graph_condition_vector_H"] = build_graph_sequence_from_condition({
+            "condition": sample["condition"],
+            "condition_columns": sample["condition_columns"]
+        })
+        
         return sample
 
 
@@ -406,16 +424,6 @@ if __name__ == "__main__":
     print("Target shape:", sample["target"].shape)
     print("Condition frames:", sample["condition_frames"])
     print("Using frames:", sample["target_frames"])
-    
-    from utils.data_utils import split_dataset_indices
-    train_idx, test_idx, train_match_ids, test_match_ids = split_dataset_indices(dataset)
-
-    print("\n--- Match ID Split ---")
-    print(f"Train Matches ({len(train_match_ids)}): {sorted(train_match_ids)}")
-    print(f"Test Matches ({len(test_match_ids)}): {sorted(test_match_ids)}")
-    
-    print(f"Train index: {len(train_idx)}")
-    print(f"Test index: {len(test_idx)}")
     
     print("Condition:", sample["condition"])
     print("Target:", sample["target"])

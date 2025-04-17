@@ -2,91 +2,99 @@ import pandas as pd
 import torch
 from torch_geometric.data import HeteroData
 import os
+import math
 from tqdm import tqdm
+
 
 def frame_tensor_to_df(frame_tensor, column_names):
     np_array = frame_tensor.cpu().numpy()
     df = pd.DataFrame([np_array], columns=column_names)
     return df
 
+
 def get_global_dist_min_max(dataset):
     all_dists = []
     for sample in dataset:
-        cond = sample["condition"]  # [T, F]
+        cond = sample["condition"]
         cols = sample["condition_columns"]
-
         for t in range(cond.shape[0]):
             for col in cols:
                 if col.endswith("_dist"):
                     val = cond[t, cols.index(col)].item()
                     all_dists.append(val)
-
     all_dists_tensor = torch.tensor(all_dists)
     return all_dists_tensor.min().item(), all_dists_tensor.max().item()
-# Node feature
-def extract_node_features_from_condition(condition_tensor, condition_columns, dist_min=0.0, dist_max=6000.0):
+
+
+def extract_node_features(condition_tensor, condition_columns):
     column_index_map = {col: idx for idx, col in enumerate(condition_columns)}
     player_bases = sorted(list(set(col.rsplit("_", 1)[0] for col in condition_columns if "ball" not in col)))
     attk_bases = [base for base in player_bases if "Attk" in base or any(f"{base}_position" in col for col in condition_columns[:22*7])][:11]
     def_bases = [base for base in player_bases if base not in attk_bases][:11]
 
-    node_features = {"Attk": [], "Def": []}
+    unified_feats = []
 
-    def normalize_dist(val):
-        return (val - dist_min) / (dist_max - dist_min + 1e-6)
+    def get_feat(base, node_type_idx):
+        feats = []
+        for feat in ["x", "y", "vx", "vy"]:
+            col = f"{base}_{feat}"
+            val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
+            feats.append(val)
+        col = f"{base}_dist"
+        feats.append(condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(-1.0))
+        col = f"{base}_position"
+        feats.append(condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(-1.0))
+        col = f"{base}_starter"
+        feats.append(condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(-1.0))
+        feats.append(torch.tensor(float(node_type_idx)))
+        return torch.stack(feats)
 
     for base in attk_bases:
-        feats = []
-        for feat in ["x", "y", "vx", "vy", "dist", "position", "starter"]:
-            col = f"{base}_{feat}"
-            val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
-            if feat == "dist":
-                val = normalize_dist(val)
-            feats.append(val)
-        node_features["Attk"].append(torch.stack(feats))
-
+        unified_feats.append(get_feat(base, 0))
     for base in def_bases:
-        feats = []
-        for feat in ["x", "y", "vx", "vy", "dist", "position", "starter"]:
-            col = f"{base}_{feat}"
-            val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
-            if feat == "dist":
-                val = normalize_dist(val)
-            feats.append(val)
-        node_features["Def"].append(torch.stack(feats))
+        unified_feats.append(get_feat(base, 1))
 
+    # Ball
     ball_feats = []
     for feat in ["x", "y", "vx", "vy"]:
         col = f"ball_{feat}"
         val = condition_tensor[column_index_map[col]] if col in column_index_map else torch.tensor(0.0)
         ball_feats.append(val)
-    node_features["Ball"] = torch.stack(ball_feats).unsqueeze(0)
+    ball_feats += [torch.tensor(-1.0)] * 3  # dist, position, starter
+    ball_feats.append(torch.tensor(2.0))    # node_type
+    unified_feats.append(torch.stack(ball_feats))
 
-    node_features["Attk"] = torch.stack(node_features["Attk"]) if node_features["Attk"] else torch.empty((0, 7))
-    node_features["Def"] = torch.stack(node_features["Def"]) if node_features["Def"] else torch.empty((0, 7))
-
-    return node_features
+    return {"Node": torch.stack(unified_feats)}
 
 # Edge
 def build_edges_based_on_interactions(node_features):
     edge_index_dict = {}
     edge_attr_dict = {}
-    
+
+    all_nodes = node_features["Node"]
+    node_type = all_nodes[:, -1]
+    type_masks = {
+        0: (node_type == 0),  # Attk
+        1: (node_type == 1),  # Def
+        2: (node_type == 2),  # Ball
+    }
+
     field_x_half = 52.5
     field_y_half = 34.0
     x_scale = 1.0 / field_x_half
     y_scale = 1.0 / field_y_half
-    real_threshold = 20  # Distance-based weight (20 m)
+    weight_threshold = 20
+    normalized_threshold = (weight_threshold**2 * x_scale**2 + weight_threshold**2 * y_scale**2)**0.5
 
-    normalized_threshold = (real_threshold**2 * x_scale**2 + real_threshold**2 * y_scale**2)**0.5
-
-    def add_edges(src_type, dst_type, relation):
-        src_tensor = node_features[src_type]
-        dst_tensor = node_features[dst_type]
+    def add_edges(src_type_id, dst_type_id, relation_suffix):
+        src_tensor = all_nodes[type_masks[src_type_id]]
+        dst_tensor = all_nodes[type_masks[dst_type_id]]
+        src_offset = torch.where(type_masks[src_type_id])[0]
+        dst_offset = torch.where(type_masks[dst_type_id])[0]
 
         if src_tensor.size(0) == 0 or dst_tensor.size(0) == 0:
-            edge_index_dict[(src_type, relation, dst_type)] = torch.zeros((2, 0), dtype=torch.long)
-            edge_attr_dict[(src_type, relation, dst_type)] = torch.zeros((0, 1), dtype=torch.float32)
+            edge_index_dict[("Node", relation_suffix, "Node")] = torch.zeros((2, 0), dtype=torch.long)
+            edge_attr_dict[("Node", relation_suffix, "Node")] = torch.zeros((0, 1), dtype=torch.float32)
             return
 
         src_x, src_y = src_tensor[:, 0], src_tensor[:, 1]
@@ -96,23 +104,25 @@ def build_edges_based_on_interactions(node_features):
         for i in range(len(src_x)):
             for j in range(len(dst_x)):
                 dist = torch.norm(torch.tensor([src_x[i] - dst_x[j], src_y[i] - dst_y[j]]))
-                if dist < 20:
-                    src.append(i)
-                    dst.append(j)
-                    attr.append(dist.item())
+                weight = math.exp(-dist.item()) if dst_type_id == 2 else 1.0 / (1.0 + dist.item())
+                if weight > normalized_threshold:
+                    src.append(src_offset[i].item())
+                    dst.append(dst_offset[j].item())
+                    attr.append(weight)
 
         edge_index = torch.tensor([src, dst], dtype=torch.long) if src else torch.zeros((2, 0), dtype=torch.long)
         edge_attr = torch.tensor(attr, dtype=torch.float32).unsqueeze(1) if attr else torch.zeros((0, 1))
-        edge_index_dict[(src_type, relation, dst_type)] = edge_index
-        edge_attr_dict[(src_type, relation, dst_type)] = edge_attr
+        edge_index_dict[("Node", relation_suffix, "Node")] = edge_index
+        edge_attr_dict[("Node", relation_suffix, "Node")] = edge_attr
 
-    add_edges("Attk", "Attk", "interaction")
-    add_edges("Attk", "Def", "interaction")
-    add_edges("Def", "Def", "interaction")
-    add_edges("Attk", "Ball", "interaction")
-    add_edges("Def", "Ball", "interaction")
-
+    add_edges(0, 0, "attk_and_attk")
+    add_edges(0, 1, "attk_and_def")
+    add_edges(1, 1, "def_and_def")
+    add_edges(0, 2, "attk_and_ball")
+    add_edges(1, 2, "def_and_ball")
+    
     return edge_index_dict, edge_attr_dict
+
 
 def convert_to_hetero_graph(node_features, edge_index_dict, edge_attr_dict):
     data = HeteroData()
@@ -123,30 +133,59 @@ def convert_to_hetero_graph(node_features, edge_index_dict, edge_attr_dict):
         data[edge_type].edge_attr = edge_attr_dict[edge_type]
     return data
 
-def build_graph_sequence_from_condition(sample, data_root=None):
+def build_graph_sequence_from_condition(sample):
     condition = sample["condition"]     # [T, F]
-    condition_columns = sample["condition_columns"]
+    T = condition.shape[0]
 
-    graph_seq = []
-    for t in range(condition.shape[0]):
-        node_feats = extract_node_features_from_condition(condition[t], condition_columns)
+    full_graph = HeteroData()
+    node_offset = 0
+
+    added_rels = set()
+
+    for t in range(T):
+        # print(f"[Frame {t+1}/{T}] node_offset_before={node_offset}")
+        node_feats = extract_node_features(condition[t], sample["condition_columns"])
         edge_index_dict, edge_attr_dict = build_edges_based_on_interactions(node_feats)
-        graph = convert_to_hetero_graph(node_feats, edge_index_dict, edge_attr_dict)
-        graph_seq.append(graph)
 
-    return graph_seq
+        node_count = node_feats["Node"].size(0)
+        if t == 0:
+            full_graph["Node"].x = node_feats["Node"]
+        else:
+            full_graph["Node"].x = torch.cat(
+                [full_graph["Node"].x, node_feats["Node"]], dim=0)
 
-def save_condition_graphs_for_dataset(dataset, indices, save_root="graph_cache"):
-    os.makedirs(save_root, exist_ok=True)
-    cache = {}
-    for idx in tqdm(indices, desc="Saving graph sequences"):
-        sample = dataset[idx]
-        match_id = sample["match_id"]
-        segment_id = f"{match_id}_{sample['condition_frames'][0]}"
+        for rel, eidx in edge_index_dict.items():
+            offset_eidx = eidx + node_offset
+            # rel is tuple like ("Node","attk_and_def","Node")
+            if rel in added_rels:
+                full_graph[rel].edge_index = torch.cat(
+                    [full_graph[rel].edge_index, offset_eidx], dim=1)
+                full_graph[rel].edge_attr = torch.cat(
+                    [full_graph[rel].edge_attr, edge_attr_dict[rel]], dim=0)
+            else:
+                full_graph[rel].edge_index = offset_eidx
+                full_graph[rel].edge_attr = edge_attr_dict[rel]
+                added_rels.add(rel)
 
-        if segment_id in cache:
-            continue
+        if t > 0:
+            prev_offset = node_offset - node_count
+            tem_edges = torch.stack([
+                torch.arange(node_count, device=node_feats["Node"].device) + prev_offset,
+                torch.arange(node_count, device=node_feats["Node"].device) + node_offset
+            ])
+            rel = ("Node", "temporal", "Node")
+            ones_attr = torch.ones((node_count,1), device=tem_edges.device)
+            if rel in added_rels:
+                full_graph[rel].edge_index = torch.cat(
+                    [full_graph[rel].edge_index, tem_edges], dim=1)
+                full_graph[rel].edge_attr = torch.cat(
+                    [full_graph[rel].edge_attr, ones_attr], dim=0)
+            else:
+                full_graph[rel].edge_index = tem_edges
+                full_graph[rel].edge_attr = ones_attr
+                added_rels.add(rel)
 
-        graph_seq = build_graph_sequence_from_condition(sample)
-        torch.save(graph_seq, os.path.join(save_root, f"{segment_id}.pt"))
-        cache[segment_id] = True
+        node_offset += node_count
+
+    return full_graph
+

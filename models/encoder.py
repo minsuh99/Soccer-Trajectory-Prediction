@@ -1,120 +1,82 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import HeteroConv, GCNConv, SAGEConv
+from torch_geometric.nn import MessagePassing, HeteroConv
+from torch_geometric.data import HeteroData
+from torch_geometric.utils import softmax
 
-class GraphAutoencoder(nn.Module):
-    def __init__(self, in_dim_dict, hidden_dim, temporal_hidden_dim, out_dim):
+class EdgeWeightedGATv2Conv(MessagePassing):
+    def __init__(self, in_channels, out_channels, heads=2, concat=False, negative_slope=0.2):
+        super().__init__(aggr='add', node_dim=0)
+        self.lin = nn.Linear(in_channels, heads * out_channels, bias=False)
+        self.att = nn.Parameter(torch.Tensor(1, heads, out_channels))
+        self.heads = heads
+        self.out_channels = out_channels
+        self.negative_slope = negative_slope
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.lin.weight)
+        nn.init.xavier_uniform_(self.att)
+
+    def forward(self, x, edge_index, edge_attr):
+        x = self.lin(x).view(-1, self.heads, self.out_channels)
+        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
+
+    def message(self, x_i, x_j, edge_attr, index, ptr, size_i):
+        h = x_i + x_j
+        score = F.leaky_relu((h * self.att).sum(dim=-1), negative_slope=self.negative_slope)
+        score = score * edge_attr
+        alpha = softmax(score, index, ptr, size_i)
+        return x_j * alpha.unsqueeze(-1)
+
+class AttentionPooling(nn.Module):
+    def __init__(self, hidden_dim):
         super().__init__()
+        self.query = nn.Parameter(torch.randn(hidden_dim))
 
-        self.node_proj = nn.ModuleDict({
-            k: nn.Linear(in_dim_dict[k], hidden_dim) for k in in_dim_dict
-        })
+    def forward(self, x):
+        scores = x @ self.query
+        weights = torch.softmax(scores, dim=0).unsqueeze(-1)
+        return (weights * x).sum(dim=0)
 
-        self.spatial_encoding = HeteroConv({
-            ('Attk', 'interaction', 'Attk'): GCNConv(hidden_dim, hidden_dim, add_self_loops=False),
-            ('Attk', 'interaction', 'Def'): SAGEConv((hidden_dim, hidden_dim), hidden_dim),
-            ('Def', 'interaction', 'Def'): GCNConv(hidden_dim, hidden_dim, add_self_loops=False),
-            ('Attk', 'interaction', 'Ball'): SAGEConv((hidden_dim, hidden_dim), hidden_dim),
-            ('Def', 'interaction', 'Ball'): SAGEConv((hidden_dim, hidden_dim), hidden_dim)
-        }, aggr='sum')
+class InteractionGraphEncoder(nn.Module):
+    def __init__(self, in_dim, hidden_dim=128, out_dim=128, heads=2):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.pool = AttentionPooling(hidden_dim)
 
-        self.temporal_encoding = nn.GRU(
-            input_size=hidden_dim, hidden_size=temporal_hidden_dim, batch_first=True
-        )
+        etypes = [
+            ('Node','attk_and_attk','Node'),
+            ('Node','attk_and_def','Node'),
+            ('Node','def_and_def','Node'),
+            ('Node','attk_and_ball','Node'),
+            ('Node','def_and_ball','Node'),
+            ('Node','temporal','Node')
+        ]
+        conv1 = {etype: EdgeWeightedGATv2Conv(in_dim, hidden_dim, heads=heads, concat=False) for etype in etypes}
+        conv2 = {etype: EdgeWeightedGATv2Conv(hidden_dim, hidden_dim, heads=heads, concat=False) for etype in etypes}
+        self.hetero_conv1 = HeteroConv(conv1, aggr='sum')
+        self.hetero_conv2 = HeteroConv(conv2, aggr='sum')
+        self.out_proj = nn.Linear(hidden_dim, out_dim)
 
-        self.h_proj = nn.Linear(temporal_hidden_dim * len(in_dim_dict), out_dim)
-
-        self.h_to_z = nn.ModuleDict({
-            k: nn.Linear(out_dim, temporal_hidden_dim) for k in in_dim_dict
-        })
-
-        self.node_decoder = nn.ModuleDict({
-            k: nn.ModuleDict({
-                "continuous": nn.Linear(temporal_hidden_dim, 4)
-            }) if k == "Ball" else nn.ModuleDict({
-                "continuous": nn.Linear(temporal_hidden_dim, 5),
-                "position": nn.Linear(temporal_hidden_dim, 24),
-                "starter": nn.Linear(temporal_hidden_dim, 1)
-            }) for k in in_dim_dict
-        })
-
-
-    def encode_frame(self, data):
-        x_dict = {}
-        for node_type in data.x_dict:
-            x = data[node_type].x
-            x_proj = self.node_proj[node_type](x)
-            x_dict[node_type] = x_proj
-        z_dict = self.spatial_encoding(x_dict, data.edge_index_dict)
-        return z_dict
-
-    def forward(self, graph_seq):
-        z_seq_dict = {k: [] for k in graph_seq[0].x_dict.keys()}
-
-        for t in range(len(graph_seq)):
-            z_t = self.encode_frame(graph_seq[t])
-            for k in z_seq_dict:
-                z_seq_dict[k].append(z_t[k])
-
-        pooled = []
-        for k in z_seq_dict:
-            z_seq = torch.stack(z_seq_dict[k], dim=1)
-            _, h_n = self.temporal_encoding(z_seq)
-            h_last = h_n.squeeze(0).mean(dim=0)
-            pooled.append(h_last)
-
-        H = self.h_proj(torch.cat(pooled, dim=-1))
-        return H
-
-    def decode_from_H(self, H, data):
-        z_final_hat = {
-            k: self.h_to_z[k](H).expand(data[k].num_nodes, -1)
-            for k in data.x_dict
-        }
-
-        continuous_loss = 0.0
-        categorical_loss = 0.0
+    def forward(self, graph: HeteroData):
+        x = graph['Node'].x
         
-        for k in z_final_hat:
-            z = z_final_hat[k]
-            x_gt = data[k].x.to(H.device)
+        x_dict = {'Node': x}
+        x_dict = self.hetero_conv1(x_dict, graph.edge_index_dict, edge_attr_dict=graph.edge_attr_dict)
+        h = F.relu(x_dict['Node'])
+        x = self.norm1(h)
+        
+        x_dict = {'Node': x}
+        x_dict = self.hetero_conv2(x_dict, graph.edge_index_dict, edge_attr_dict=graph.edge_attr_dict)
+        h = F.relu(x_dict['Node'])
+        x = self.norm2(h)
 
-            if k in ["Attk", "Def"]:
-                x_hat_cont = self.node_decoder[k]["continuous"](z)
-                x_hat_pos = self.node_decoder[k]["position"](z)
-                x_hat_starter = self.node_decoder[k]["starter"](z)
-
-                continuous_loss += F.huber_loss(x_hat_cont, x_gt[:, :5])
-                hub_x_y = F.huber_loss(x_hat_cont[:, :2], x_gt[:, :2])
-                hub_vel = F.huber_loss(x_hat_cont[:, 2:4], x_gt[:, 2:4])
-                hub_dist = F.huber_loss(x_hat_cont[:, 4], x_gt[:, 4])
-                continuous_loss += hub_x_y + hub_vel + hub_dist
-                
-                categorical_loss += F.cross_entropy(x_hat_pos, x_gt[:, 5].long())  # position loss
-                categorical_loss += F.binary_cross_entropy_with_logits(x_hat_starter.squeeze(-1), x_gt[:, 6].float())  # starter loss
-
-            elif k == "Ball":
-                x_hat_ball = self.node_decoder[k]["continuous"](z)
-                continuous_loss += F.hub_loss(x_hat_ball, x_gt)
-
-        edge_loss = 0.0
-
-        for (src, _, dst), edge_index in data.edge_index_dict.items():
-            z_src = z_final_hat[src]  # [N_src, D]
-            z_dst = z_final_hat[dst]  # [N_dst, D]
-            u, v = edge_index  # [2, E]
-
-            # 예측: interaction weight
-            pred_weight = (z_src[u] * z_dst[v]).sum(dim=-1)  # [E]
-
-            # GT: 실제 edge weight (interaction strength)
-            edge_attr = data[(src, "interaction", dst)].edge_attr.view(-1).to(pred_weight.device)  # [E]
-
-            # 회귀 손실
-            edge_loss += F.hub_loss(pred_weight, edge_attr)
-
-        return continuous_loss, categorical_loss, edge_loss
-
-
-
+        graph['Node'].x = x
+        
+        graph_rep = self.pool(x)
+        graph_rep = self.out_proj(graph_rep)
+        
+        return graph_rep
