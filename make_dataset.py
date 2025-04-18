@@ -100,72 +100,80 @@ def organize_and_process(data_path, save_path):
         shutil.move(os.path.join(data_path, f), os.path.join(match_dir, f))
 
     # Preprocessing for each folder
-    for match_id in tqdm(os.listdir(data_path), desc = "Converting..."):
+    def _convert_match(match_id):
         match_dir = os.path.join(data_path, match_id)
-        if not os.path.isdir(match_dir): continue
+        if not os.path.isdir(match_dir): 
+            return
 
         pos, info, events = None, None, None
-        for f in os.listdir(match_dir):
-            if "positions_raw" in f: pos = f
-            elif "matchinformation" in f: info = f
-            elif "events_raw" in f: events = f
+        for fname in os.listdir(match_dir):
+            if "positions_raw" in fname: pos = fname
+            elif "matchinformation" in fname: info = fname
+            elif "events_raw" in fname: events = fname
 
-        if pos and info and events:
-            xy, poss, ball, teamsheets, _ = read_position_data_xml(
-                os.path.join(match_dir, pos),
-                os.path.join(match_dir, info)
+        if not (pos and info and events):
+            return
+
+        xy, poss, ball, teamsheets, _ = read_position_data_xml(
+            os.path.join(match_dir, pos),
+            os.path.join(match_dir, info)
+        )
+        home, away = process_match(xy, poss, ball)
+
+        save_match_dir = os.path.join(save_path, match_id)
+        os.makedirs(save_match_dir, exist_ok=True)
+        home.to_csv(os.path.join(save_match_dir, "tracking_home.csv"))
+        away.to_csv(os.path.join(save_match_dir, "tracking_away.csv"))
+
+        # player_info.csv 생성
+        position_mapping = {
+            "TW": 1, "LV": 2, "IVL": 3, "IVZ": 4, "IVR": 5, "RV": 6,
+            "DML": 7, "DMZ": 8, "DMR": 9,
+            "LM": 10, "HL": 11, "MZ": 12, "HR": 13, "RM": 14,
+            "OLM": 15, "ZO": 16, "ORM": 17,
+            "LA": 18, "STL": 19, "HST": 20, "STZ": 21, "STR": 22, "RA": 23
+        }
+        player_info_rows = []
+        for team in ["Home", "Away"]:
+            df_team = teamsheets[team].teamsheet.reset_index(drop=True)
+            tracking_df = home if team == "Home" else away
+            base_offset = 1 if team == "Home" else 21
+            num_players = len(df_team)
+            starters = infer_starters_from_tracking(
+                tracking_df, team, num_players, offset=base_offset - 1
             )
-            home, away = process_match(xy, poss, ball)
+            for i, row in df_team.iterrows():
+                col_name = f"{team}_{base_offset + i}"
+                pos_num = position_mapping.get(row["position"], 0)
+                is_start = 1 if starters[i] else 0
 
-            save_match_dir = os.path.join(save_path, match_id)
-            os.makedirs(save_match_dir, exist_ok=True)
-            home.to_csv(os.path.join(save_match_dir, "tracking_home.csv"))
-            away.to_csv(os.path.join(save_match_dir, "tracking_away.csv"))
+                if f"{col_name}_x" in tracking_df.columns and f"{col_name}_y" in tracking_df.columns:
+                    pts = tracking_df[[f"{col_name}_x", f"{col_name}_y"]].dropna()
+                    start_f = int(pts.index.min()) if not pts.empty else None
+                    end_f   = int(pts.index.max()) if not pts.empty else None
+                else:
+                    start_f = end_f = None
 
-            position_mapping = {
-                "TW": 1, "LV": 2, "IVL": 3, "IVZ": 4, "IVR": 5, "RV": 6,
-                "DML": 7, "DMZ": 8, "DMR": 9,
-                "LM": 10, "HL": 11, "MZ": 12, "HR": 13, "RM": 14,
-                "OLM": 15, "ZO": 16, "ORM": 17,
-                "LA": 18, "STL": 19, "HST": 20, "STZ": 21, "STR": 22, "RA": 23
-            }
+                player_info_rows.append({
+                    "col_name":   col_name,
+                    "position":   pos_num,
+                    "starter":    is_start,
+                    "start_frame": start_f,
+                    "end_frame":   end_f
+                })
 
-            player_info_rows = []
-            for team in ["Home", "Away"]:
-                df_team = teamsheets[team].teamsheet.reset_index(drop=True)
-                tracking_df = home if team == "Home" else away
-                base_offset = 1 if team == "Home" else 21
-                num_players = len(df_team)
-                starters = infer_starters_from_tracking(tracking_df, team, num_players, offset=base_offset - 1)
+        df_pi = pd.DataFrame(player_info_rows)
+        df_pi.to_csv(os.path.join(save_match_dir, "player_info.csv"), index=False)
 
-                for i in range(len(df_team)):
-                    col_name = f"{team}_{base_offset + i}"
-                    position = df_team.loc[i, "position"]
-                    position_num = position_mapping.get(position, 0)
-                    is_starter = 1 if starters[i] else 0
-                    if f"{col_name}_x" in tracking_df.columns and f"{col_name}_y" in tracking_df.columns:
-                        player_xy = tracking_df[[f"{col_name}_x", f"{col_name}_y"]].dropna()
-                        if not player_xy.empty:
-                            start_frame = player_xy.index.min()
-                            end_frame = player_xy.index.max()
-                        else:
-                            start_frame = end_frame = None
-                    else:
-                        start_frame = end_frame = None
-                    player_info_rows.append({
-                        "col_name": col_name,
-                        "position": position_num,
-                        "starter": is_starter,
-                        "start_frame": start_frame,
-                        "end_frame": end_frame
-                    })
-
-            df_player_info = pd.DataFrame(player_info_rows)
-            df_player_info.to_csv(os.path.join(save_match_dir, "player_info.csv"), index=False)
-            
-            # 나중에 쓸 메타데이터 파일 복사         
-            shutil.copy(os.path.join(match_dir, info), os.path.join(save_match_dir, "matchinformation.xml"))
-
+        # 매치정보 XML 복사
+        shutil.copy(
+            os.path.join(match_dir, info),
+            os.path.join(save_match_dir, "matchinformation.xml")
+        )
+        
+    match_ids = [d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))]
+    for mid in match_ids:
+        _convert_match(mid)
 
 
 class MultiMatchSoccerDataset(Dataset):
@@ -177,43 +185,53 @@ class MultiMatchSoccerDataset(Dataset):
         self.stride = stride
         self.samples = []
         self.match_data = {}
+        self.column_order = None
         self.load_all_matches(data_root)
     
     # Preprocess raw match data and extract valid trajectory segments
     def load_all_matches(self, data_root):
         match_ids = os.listdir(data_root)
-        skip_ids = {"DFL-MAT-J03WN1"}  # Skip matches with insufficient data (red card early)
+        skip_ids = {"DFL-MAT-J03WN1"}  # Skip matches with insufficient data
         match_ids = [m for m in match_ids if m not in skip_ids]
-        for match_id in tqdm(match_ids, desc= "Data Loading..."):
-            match_folder = os.path.join(data_root, match_id)
-            home_path = os.path.join(match_folder, "tracking_home.csv")
-            away_path = os.path.join(match_folder, "tracking_away.csv")
 
-            home = pd.read_csv(home_path, index_col="Frame")
-            away = pd.read_csv(away_path, index_col="Frame")
-            # Detecting the abnormal movement
-            home = correct_all_player_jumps_adjacent(home, framerate=self.framerate)
-            away = correct_all_player_jumps_adjacent(away, framerate=self.framerate)
+        for match_id in tqdm(match_ids, desc="Loading Matches"):
+            folder = os.path.join(data_root, match_id)
+            # CSV 로드
+            home = pd.read_csv(os.path.join(folder, "tracking_home.csv"), index_col="Frame")
+            away = pd.read_csv(os.path.join(folder, "tracking_away.csv"), index_col="Frame")
+            # 전처리
+            home = correct_all_player_jumps_adjacent(home, self.framerate)
+            away = correct_all_player_jumps_adjacent(away, self.framerate)
             home = calc_velocites(home)
             away = calc_velocites(away)
             home_dist = compute_cumulative_distances(home, "Home")
             away_dist = compute_cumulative_distances(away, "Away")
-            home = pd.concat([home, home_dist], axis=1)
-            away = pd.concat([away, away_dist], axis=1)
 
+            # 공통/팀별 컬럼 합치기
             common_cols = ['Period', 'Time [s]', 'match_time', 'active', 'possession']
-            common = home[common_cols]
-            home_only = home.drop(columns=common_cols).drop(columns=['ball_x', 'ball_y', 'ball_vx', 'ball_vy', 'ball_speed'])
+            common    = home[common_cols]
+            home_only = home.drop(columns=common_cols).drop(
+                columns=['ball_x', 'ball_y', 'ball_vx', 'ball_vy', 'ball_speed']
+            )
             away_only = away.drop(columns=common_cols)
-            df = pd.concat([common, home_only, away_only, home_dist, away_dist], axis=1)
+            df        = pd.concat([common, home_only, away_only, home_dist, away_dist], axis=1)
 
-            self.column_order = df.columns.tolist()
-            segments_info = self.extract_segments_info(df, match_id)
-            if segments_info:
-                self.match_data[match_id] = df
-                self.samples.extend(segments_info)
+            # 세그먼트 정보 추출
+            segs = self.extract_segments_info(df, match_id)
+            if not segs:
+                continue
+
+            # 최초 한 번만 컬럼 순서 기록
+            if self.column_order is None:
+                self.column_order = df.columns.tolist()
+
+            # 데이터 저장
+            self.match_data[match_id] = df
+            self.samples.extend(segs)
 
     def extract_segments_info(self, df, match_id):
+        if self.column_order is None:
+            self.column_order = df.columns.tolist()
         segments_info = []
         num_frames = len(df)
         possession_array = df["possession"].values
@@ -305,6 +323,10 @@ class MultiMatchSoccerDataset(Dataset):
                 condition_columns.add(col)
 
         # Sort columns
+        if not hasattr(self, "column_order"):
+            self.column_order = df.columns.tolist()
+        
+        
         condition_columns = sort_columns_by_original_order(condition_columns, self.column_order)
         condition_seq = condition_seq[condition_columns]
 
@@ -331,39 +353,30 @@ class MultiMatchSoccerDataset(Dataset):
             info_path = os.path.join(self.data_root, match_id, "matchinformation.xml")
             pitch = read_pitch_from_mat_info_xml(info_path)
             self.pitch_cache[match_id] = (pitch.length / 2, pitch.width / 2)
+            
         x_scale, y_scale = self.pitch_cache[match_id]
-        
-        # Normalization for other columns
-        # suffixes 는 기존과 동일
-        suffixes = ("_vx", "_vy", "_dist", "ball_vx", "ball_vy")
-        norm_cols = [c for c in condition_seq.columns if c.endswith(suffixes)]
-
-        for col in norm_cols:
-            # 1) pandas Series 를 numpy array 로 변환
-            vals = condition_seq[col].to_numpy(dtype=float)  
-
-            # 2) numpy 로 mean/std 계산 (둘 다 스칼라)
-            mean = vals.mean()
-            std  = vals.std(ddof=0)
-
-            # 3) 스칼라 bool 비교
-            if std > 0.0:
-                condition_seq[col] = (condition_seq[col] - mean) / std
-            else:
-                condition_seq[col] = 0.0
-
-
-        target_seq[target_columns[0::2]] = target_seq[target_columns[0::2]] / x_scale
-        target_seq[target_columns[1::2]] = target_seq[target_columns[1::2]] / y_scale
+    
+        target_seq[target_columns[0::2]] /= x_scale
+        target_seq[target_columns[1::2]] /= y_scale
 
         # other_seq[other_columns[0::2]] = other_seq[other_columns[0::2]] / x_scale
         # other_seq[other_columns[1::2]] = other_seq[other_columns[1::2]] / y_scale
 
         condition_x_cols = [col for col in condition_seq.columns if col.endswith("_x")]
         condition_y_cols = [col for col in condition_seq.columns if col.endswith("_y")]
-        condition_seq[condition_x_cols] = condition_seq[condition_x_cols] / x_scale
-        condition_seq[condition_y_cols] = condition_seq[condition_y_cols] / y_scale
+        condition_seq[condition_x_cols] /= x_scale
+        condition_seq[condition_y_cols] /= y_scale
 
+        # Normalization for other columns
+        # suffixes 는 기존과 동일
+        for col in condition_seq.columns:
+            if col.endswith("_vx") or col.endswith("ball_vx"):
+                condition_seq[col] /= x_scale                  # m/s → 1/s
+            elif col.endswith("_vy") or col.endswith("ball_vy"):
+                condition_seq[col] /= y_scale
+            elif col.endswith("_dist"):
+                condition_seq[col] /= (x_scale**2 + y_scale**2) ** 0.5 
+        
         # Add player's position, starter feature
         enriched_condition = []
         for i in range(len(condition_seq)):
@@ -399,7 +412,8 @@ class MultiMatchSoccerDataset(Dataset):
         
         sample["graph"] = build_graph_sequence_from_condition({
             "condition": sample["condition"],
-            "condition_columns": sample["condition_columns"]
+            "condition_columns": sample["condition_columns"],
+            "pitch_scale": sample["pitch_scale"]
         })
         
         return sample
@@ -408,11 +422,17 @@ class MultiMatchSoccerDataset(Dataset):
 if __name__ == "__main__":
     raw_data_path = "idsse-data" # Raw Data Downloaded Path
     data_save_path = "match_data" # Saving path for preprocessed data
+
     organize_and_process(raw_data_path, data_save_path)
+
     dataset = MultiMatchSoccerDataset(data_root=data_save_path)
+
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True
     )
+    
+    sample = dataset[0]
+    
     print(len(dataset), "samples loaded.")
     sample = dataset[0]
     print("Match id:", sample["match_id"])
@@ -427,5 +447,4 @@ if __name__ == "__main__":
     
     print("Condition:", sample["condition"])
     print("Target:", sample["target"])
-    
-    
+

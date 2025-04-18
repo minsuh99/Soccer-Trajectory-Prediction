@@ -81,60 +81,50 @@ def extract_node_features(condition_tensor, condition_columns):
     return {"Node": torch.stack(unified_feats)}
 
 # Edge
-def build_edges_based_on_interactions(node_features):
-    edge_index_dict = {}
-    edge_attr_dict = {}
+def build_edges_based_on_interactions(node_features, pitch_scale):
+    edge_index_dict, edge_attr_dict = {}, {}
+    x_scale, y_scale = pitch_scale
 
-    all_nodes = node_features["Node"]
-    node_type = all_nodes[:, -1]
-    type_masks = {
-        0: (node_type == 0),  # Attk
-        1: (node_type == 1),  # Def
-        2: (node_type == 2),  # Ball
-    }
+    nodes = node_features["Node"]        # (N, F)
+    node_type = nodes[:, -1]                 # 0=Attk, 1=Def, 2=Ball
+    masks = {t: (node_type == t) for t in (0, 1, 2)}
 
-    field_x_half = 52.5
-    field_y_half = 34.0
-    x_scale = 1.0 / field_x_half
-    y_scale = 1.0 / field_y_half
-    weight_threshold = 20
-    normalized_threshold = (weight_threshold**2 * x_scale**2 + weight_threshold**2 * y_scale**2)**0.5
+    weight_thr = 0.1   # 필터 임계값
 
-    def add_edges(src_type_id, dst_type_id, relation_suffix):
-        src_tensor = all_nodes[type_masks[src_type_id]]
-        dst_tensor = all_nodes[type_masks[dst_type_id]]
-        src_offset = torch.where(type_masks[src_type_id])[0]
-        dst_offset = torch.where(type_masks[dst_type_id])[0]
-
-        if src_tensor.size(0) == 0 or dst_tensor.size(0) == 0:
-            edge_index_dict[("Node", relation_suffix, "Node")] = torch.zeros((2, 0), dtype=torch.long)
-            edge_attr_dict[("Node", relation_suffix, "Node")] = torch.zeros((0, 1), dtype=torch.float32)
+    def make_edges(s_t, d_t, rel):
+        s_idx = torch.where(masks[s_t])[0]          # (Ns,)
+        d_idx = torch.where(masks[d_t])[0]          # (Nd,)
+        if s_idx.numel() == 0 or d_idx.numel() == 0:
+            edge_index_dict[("Node", rel, "Node")] = torch.empty((2, 0), dtype=torch.long)
+            edge_attr_dict [("Node", rel, "Node")] = torch.empty((0, 1), dtype=torch.float32)
             return
 
-        src_x, src_y = src_tensor[:, 0], src_tensor[:, 1]
-        dst_x, dst_y = dst_tensor[:, 0], dst_tensor[:, 1]
+        # 거리 계산 시 실제 거리 사용
+        s_pos = nodes[s_idx, :2] * torch.tensor([x_scale, y_scale], device=nodes.device)
+        d_pos = nodes[d_idx, :2] * torch.tensor([x_scale, y_scale], device=nodes.device)
+        dist = (s_pos.unsqueeze(1) - d_pos.unsqueeze(0)).norm(dim=-1)  # (Ns, Nd)
 
-        src, dst, attr = [], [], []
-        for i in range(len(src_x)):
-            for j in range(len(dst_x)):
-                dist = torch.norm(torch.tensor([src_x[i] - dst_x[j], src_y[i] - dst_y[j]]))
-                weight = math.exp(-dist.item()) if dst_type_id == 2 else 1.0 / (1.0 + dist.item())
-                if weight > normalized_threshold:
-                    src.append(src_offset[i].item())
-                    dst.append(dst_offset[j].item())
-                    attr.append(weight)
+        weight = torch.exp(-dist * 0.25) if d_t == 2 else 1.0 / (1.0 + dist)   # (Ns, Nd)
+        mask = weight > weight_thr
 
-        edge_index = torch.tensor([src, dst], dtype=torch.long) if src else torch.zeros((2, 0), dtype=torch.long)
-        edge_attr = torch.tensor(attr, dtype=torch.float32).unsqueeze(1) if attr else torch.zeros((0, 1))
-        edge_index_dict[("Node", relation_suffix, "Node")] = edge_index
-        edge_attr_dict[("Node", relation_suffix, "Node")] = edge_attr
+        if not mask.any():
+            edge_index_dict[("Node", rel, "Node")] = torch.empty((2, 0), dtype=torch.long)
+            edge_attr_dict [("Node", rel, "Node")] = torch.empty((0, 1), dtype=torch.float32)
+            return
 
-    add_edges(0, 0, "attk_and_attk")
-    add_edges(0, 1, "attk_and_def")
-    add_edges(1, 1, "def_and_def")
-    add_edges(0, 2, "attk_and_ball")
-    add_edges(1, 2, "def_and_ball")
-    
+        src_ids, dst_ids = mask.nonzero(as_tuple=True)          # (E,), (E,)
+        edge_index = torch.stack([s_idx[src_ids], d_idx[dst_ids]], dim=0)  # (2, E)
+        edge_attr  = weight[mask].unsqueeze(1).float()                        # **(E, 1)**
+
+        edge_index_dict[("Node", rel, "Node")] = edge_index
+        edge_attr_dict [("Node", rel, "Node")] = edge_attr
+
+    make_edges(0, 0, "attk_and_attk")
+    make_edges(0, 1, "attk_and_def")
+    make_edges(1, 1, "def_and_def")
+    make_edges(0, 2, "attk_and_ball")
+    make_edges(1, 2, "def_and_ball")
+
     return edge_index_dict, edge_attr_dict
 
 
@@ -159,7 +149,7 @@ def build_graph_sequence_from_condition(sample):
     for t in range(T):
         # print(f"[Frame {t+1}/{T}] node_offset_before={node_offset}")
         node_feats = extract_node_features(condition[t], sample["condition_columns"])
-        edge_index_dict, edge_attr_dict = build_edges_based_on_interactions(node_feats)
+        edge_index_dict, edge_attr_dict = build_edges_based_on_interactions(node_feats, sample["pitch_scale"])
 
         node_count = node_feats["Node"].size(0)
         if t == 0:

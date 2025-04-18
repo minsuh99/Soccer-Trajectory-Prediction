@@ -1,13 +1,10 @@
 import os
-from joblib import Parallel, delayed
 import torch
 import numpy as np
 from tqdm import tqdm
 
 from torch.utils.data import DataLoader, Subset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch_geometric.data import Batch
-from torch_geometric.loader import DataLoader as GeoDataLoader
 from models.diff_modules import diff_CSDI
 from models.diff_model import DiffusionTrajectoryModel
 from models.encoder import InteractionGraphEncoder
@@ -20,13 +17,12 @@ from utils.graph_utils import build_graph_sequence_from_condition
 # raw_data_path = "Download raw file path"
 raw_data_path = "idsse-data"
 data_save_path = "match_data"
-batch_size = 64
+batch_size = 32
 num_workers = 8
 epochs = 100
 learning_rate = 1e-4
 num_samples = 10
 SEED = 42
-n_jobs = 16
 
 set_evertyhing(SEED)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -47,7 +43,7 @@ train_dataloader = DataLoader(
     shuffle=True,
     num_workers=num_workers,
     pin_memory=True,
-    persistent_workers=False,
+    persistent_workers=True,
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
     generator=generator(SEED)
@@ -59,14 +55,14 @@ val_dataloader = DataLoader(
     shuffle=False,
     num_workers=num_workers,
     pin_memory=True,
-    persistent_workers=False,
+    persistent_workers=True,
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
 )
 
 test_dataloader = DataLoader(
     Subset(dataset, test_idx),
-    batch_size=8,
+    batch_size=1,
     shuffle=False,
     num_workers=0,
     pin_memory=True,
@@ -81,13 +77,14 @@ print("---Data Load!---")
 # Extract node feature dimension
 sample = dataset[0]
 graph = build_graph_sequence_from_condition({
-    "condition": sample["condition"].to(device),
-    "condition_columns": sample["condition_columns"]
-})
+    "condition": sample["condition"],
+    "condition_columns": sample["condition_columns"],
+    "pitch_scale": sample["pitch_scale"]
+}).to(device)
 in_dim = graph['Node'].x.size(1)
 
 csdi_config = {
-    "num_steps": 1000,
+    "num_steps": 500,
     "channels": 64,
     "diffusion_embedding_dim": 128,
     "nheads": 4,
@@ -95,34 +92,34 @@ csdi_config = {
     "side_dim": 128
 }
 
-graph_encoder = InteractionGraphEncoder(in_dim=in_dim, hidden_dim=128, out_dim=128, heads = 2).to(device)
+graph_encoder = InteractionGraphEncoder(in_dim=in_dim, hidden_dim=128, out_dim=128, heads = 1).to(device)
 denoiser = diff_CSDI(csdi_config)
-diff_model = DiffusionTrajectoryModel(denoiser, num_steps=csdi_config["num_steps"]).to(device)
-optimizer = torch.optim.Adam(diff_model.parameters(), lr=learning_rate)
+model = DiffusionTrajectoryModel(denoiser, num_steps=csdi_config["num_steps"]).to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, threshold=1e-4)
 
 # 4. Train
 best_state_dict = None
 best_val_loss = float("inf")
 
-for epoch in range(1, epochs + 1):
-    diff_model.train()
-    total_noise_loss = total_player_loss = total_loss = 0.0
+for epoch in tqdm(range(1, epochs + 1), desc="Training..."):
+    model.train()
+    total_noise_loss = 0
+    total_player_loss = 0
+    total_loss = 0
 
-    for batch in tqdm(train_dataloader, desc="Training"):
-        # single batch 에 condition, target, graph 이 모두 들어 있음
-        cond = batch["condition"].to(device)                             # [B, T, F]
+    for batch in tqdm(train_dataloader, desc = "Batch Training..."):
+        cond = batch["condition"]                            # [B, T, F]
         target = batch["target"].to(device).view(-1, cond.size(1), 11, 2)  # [B, T, 11, 2]
-        graph_batch = batch["graph"].to(device)                                 # HeteroData batch
-
-        # graph → H
-        H = graph_encoder(graph_batch)                                         # [B, 128]
-        cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))                    # [B,128,11,T]
-
-        noise_loss, player_loss = diff_model(target, cond_info=cond_H)
-        loss = noise_loss + player_loss
+        graph_batch = batch["graph"].to(device)                              # HeteroData batch
 
         optimizer.zero_grad()
+        # graph → H
+        H = graph_encoder(graph_batch)                                       # [B, 128]
+        cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))                    # [B,128,11,T]
+
+        noise_loss, player_loss = model(target, cond_info=cond_H)
+        loss = noise_loss + player_loss
         loss.backward()
         optimizer.step()
 
@@ -136,57 +133,59 @@ for epoch in range(1, epochs + 1):
     avg_player_loss = total_player_loss / num_batches
     avg_total_loss = total_loss / num_batches
 
-    tqdm.write(f"[Epoch {epoch}] Cost: {avg_total_loss:.6f} | "
-               f"Noise Loss: {avg_noise_loss:.6f} | "
-               f"Player Loss: {avg_player_loss:.6f} | "
-               f"LR: {scheduler.get_last_lr()[0]:.6f}")
-
     # --- Validation ---
-    diff_model.eval()
-    val_noise_loss = val_player_loss = val_total_loss = 0.0
+    model.eval()
+    val_noise_loss = 0
+    val_player_loss = 0
+    val_total_loss = 0
 
     with torch.no_grad():
         for batch in tqdm(val_dataloader, desc="Validation"):
-            cond = batch["condition"].to(device)
+            cond = batch["condition"]
             target = batch["target"].to(device).view(-1, cond.size(1), 11, 2)
             graph_batch = batch["graph"].to(device)
 
             H = graph_encoder(graph_batch)
             cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))
 
-            noise_loss, player_loss = diff_model(target, cond_info=cond_H)
-            val_noise += noise_loss.item()
-            val_player += player_loss.item()
-            val_total += (noise_loss+player_loss).item()
+            noise_loss, player_loss = model(target, cond_info=cond_H)
+            val_noise_loss += noise_loss.item()
+            val_player_loss += player_loss.item()
+            val_total_loss += (noise_loss + player_loss).item()
 
-    avg_val = val_total / len(val_dataloader)
-    tqdm.write(f"[Epoch {epoch}] Val Loss: {avg_val:.6f} | "
-               f"Noise: {val_noise/len(val_dataloader):.6f} | "
-               f"Player: {val_player/len(val_dataloader):.6f}")
+    avg_val = val_total_loss / len(val_dataloader)
+    tqdm.write(f"[Epoch {epoch}]")
+    tqdm.write(f"Cost: {avg_total_loss:.6f} | "
+               f"Noise Loss: {avg_noise_loss:.6f} | "
+               f"Player Loss: {avg_player_loss:.6f} | "
+               f"LR: {scheduler.get_last_lr()[0]:.6f}")
+    tqdm.write(f"Val Loss: {avg_val:.6f} | "
+               f"Noise: {val_noise_loss/len(val_dataloader):.6f} | "
+               f"Player: {val_player_loss/len(val_dataloader):.6f}")
 
     scheduler.step(avg_val)
     if avg_val < best_val_loss:
         best_val_loss = avg_val
-        best_state_dict = diff_model.state_dict()
+        best_state_dict = model.state_dict()
 
 # 5. Inference (Best-of-N Sampling) & Visualization
-diff_model.load_state_dict(best_state_dict)
-diff_model.eval()
+model.load_state_dict(best_state_dict)
+model.eval()
 all_ade, all_fde = [], []
 visualize_samples = 5
 visualization_done = False
 
 with torch.no_grad():
     for batch in tqdm(test_dataloader, desc="Inference"):
-        cond = batch["condition"].to(device)
+        cond = batch["condition"]
         target = batch["target"].to(device).view(-1, cond.size(1), 11, 2)
-        graph_batch = batch["graph_condition_vector_H"].to(device)
+        graph_batch = batch["graph"].to(device)
         B = cond.size(0)
 
         H = graph_encoder(graph_batch)
         cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))
 
-        generated = diff_model.generate(
+        generated = model.generate(
             shape=target.shape,
             cond_info=cond_H,
             num_samples=num_samples
