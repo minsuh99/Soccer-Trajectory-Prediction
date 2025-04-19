@@ -35,7 +35,7 @@ class InteractionGraphEncoder(nn.Module):
     """
     A lightweight encoder using built-in GATv2Conv per relation (no custom message-passing).
     """
-    def __init__(self, in_dim, hidden_dim=128, out_dim=128, heads=1):
+    def __init__(self, in_dim, hidden_dim=128, out_dim=128, heads=2):
         super().__init__()
         # normalization and pooling
         self.norm1 = nn.LayerNorm(hidden_dim)

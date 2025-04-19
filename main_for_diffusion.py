@@ -65,7 +65,7 @@ val_dataloader = DataLoader(
 
 test_dataloader = DataLoader(
     Subset(dataset, test_idx),
-    batch_size=1,
+    batch_size=16,
     shuffle=False,
     num_workers=0,
     pin_memory=True,
@@ -88,10 +88,10 @@ in_dim = graph['Node'].x.size(1)
 
 csdi_config = {
     "num_steps": 500,
-    "channels": 128,
+    "channels": 256,
     "diffusion_embedding_dim": 128,
     "nheads": 4,
-    "layers": 6,
+    "layers": 10,
     "side_dim": 128
 }
 
@@ -171,6 +171,21 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training..."):
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
         best_state_dict = model.state_dict()
+        
+# 4-1. Plot learning_curve
+plt.figure(figsize=(6,4))
+plt.plot(range(1, epochs+1), train_losses, label='Train Loss')
+plt.plot(range(1, epochs+1), val_losses,   label='Val Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Train & Validation Loss, 500 steps, 128 channels, 128 embedding dim, 4 heads, 6 layers')
+plt.legend()
+plt.tight_layout()
+
+plt.savefig('results/diffusion_lr_curve.png')
+
+plt.show()
+
 # 5. Inference (Best-of-N Sampling) & Visualization
 model.load_state_dict(best_state_dict)
 model.eval()
@@ -212,35 +227,23 @@ with torch.no_grad():
 
         all_ade.extend(ade_final.cpu().numpy())
         all_fde.extend(fde_final.cpu().numpy())
+        
 
         if not visualization_done:
             os.makedirs("results", exist_ok=True)
             for i in range(min(B, visualize_samples)):
-                others = batch["other"][i].view(-1, 12, 2).cpu()
-                target_vis = best_target[i].cpu()
-                pred_vis = best_pred[i].cpu()
-                pitch_scale = batch["pitch_scale"][i]
+                others = batch["other"][i].view(-1,12,2).cpu().numpy()
+                target = best_target[i].cpu().numpy()   # (T,11,2)
+                pred = best_pred[i].cpu().numpy()     # (T,11,2)
+                
                 save_path = f"results/Diff_sample_{i:02d}.png"
-                plot_trajectories_on_pitch(
-                    others, target_vis, pred_vis, pitch_scale,
-                    save_path=save_path
-                )
+                
+                os.makedirs('results/player_trajs', exist_ok=True)
+                for p in range(11):
+                    save_path = f'results/player_trajs/sample{i:02d}_def{p:02d}.png'
+                    plot_trajectories_on_pitch(others, best_target, best_pred, player_idx=p, save_path=save_path)
             visualization_done = True
 
 avg_ade = np.mean(all_ade)
 avg_fde = np.mean(all_fde)
 print(f"[Inference - Best of {num_samples}] ADE: {avg_ade:.4f} | FDE: {avg_fde:.4f}")
-
-# 6. Plot learning_curve
-plt.figure(figsize=(6,4))
-plt.plot(range(1, epochs+1), train_losses, label='Train Loss')
-plt.plot(range(1, epochs+1), val_losses,   label='Val Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.title('Train & Validation Loss, 500 steps, 128 channels, 128 embedding dim, 4 heads, 6 layers')
-plt.legend()
-plt.tight_layout()
-
-plt.savefig('results/diffusion_lr_curve.png')
-
-plt.show()

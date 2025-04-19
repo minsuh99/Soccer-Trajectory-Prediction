@@ -318,34 +318,42 @@ def plot_pitch( field_dimen = (106.0,68.0), field_color ='green', linewidth=2, m
 
 
 ## Vizualization
-def plot_trajectories_on_pitch(others, target, pred, pitch_scale, save_path=None):
+def plot_trajectories_on_pitch(others, target, pred, player_idx=None, save_path=None):
+    if torch.is_tensor(others):
+        others = others.cpu().numpy()
+    if torch.is_tensor(target):
+        target = target.cpu().numpy()
+    if torch.is_tensor(pred):
+        pred = pred.cpu().numpy()
+    
     fig, ax = plot_pitch(field_dimen=(106.0, 68.0), field_color='green')
 
-    x_scale, y_scale = pitch_scale
+    # 1) attackers
+    for m in range(11):
+        ax.plot(others[:, m, 0], others[:, m, 1],
+                color='red', linestyle='-', linewidth=1.2, alpha=0.7,
+                label='Attackers' if m == 0 else None)
+    # ball
+    ax.plot(others[:, 11, 0], others[:, 11, 1],
+            color='black', linestyle='-', linewidth=2.0, label='Ball')
 
-    # 1. Plot others (11 attackers + ball)
-    for m in range(11):  # 0~10: attackers
-        ax.plot(others[:, m, 0], others[:, m, 1], color='red', linestyle='-', linewidth=1.2, alpha=0.7, label='Attackers' if m == 0 else None)
-        ax.plot(others[-1, m, 0], others[-1, m, 1], 'ro', markersize=4, alpha=0.8)
+    # 2) defenders GT / Pred
+    idxs = [player_idx] if player_idx is not None else list(range(11))
+    for i in idxs:
+        ax.plot(target[:, i, 0], target[:, i, 1],
+                color='blue', linestyle='-', linewidth=2.0, alpha=0.8,
+                label='Target' if i == idxs[0] else None)
+        ax.plot(pred[:, i, 0], pred[:, i, 1],
+                color='skyblue', linestyle='--', linewidth=2.0, alpha=0.9,
+                label='Predicted' if i == idxs[0] else None)
 
-    # Ball (11)
-    ax.plot(others[:, 11, 0], others[:, 11, 1], color='black', linestyle='-', linewidth=2.0, label='Ball')
-    ax.plot(others[-1, 11, 0], others[-1, 11, 1], 'ko', markersize=5)
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.03),
+              ncol=3, frameon=True)
 
-    # 2. defenders(GT)
-    for i in range(11):
-        ax.plot(target[:, i, 0], target[:, i, 1], color='blue', linestyle='-', linewidth=2.0, alpha=0.8, label='Target' if i == 0 else None)
-        ax.plot(target[-1, i, 0], target[-1, i, 1], 'bo', markersize=4, alpha=0.9)
-
-    # 3. defenders (Pred)
-    for i in range(11):
-        ax.plot(pred[:, i, 0], pred[:, i, 1], color='skyblue', linestyle='--', linewidth=2.0, alpha=0.9, label='Predicted' if i == 0 else None)
-        ax.plot(pred[-1, i, 0], pred[-1, i, 1], 'o', color='skyblue', markersize=4, alpha=0.9)
-
-    ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.03), ncol=4, frameon=True)
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight')
-        plt.close()
+        fig.savefig(save_path, bbox_inches='tight')
+        plt.close(fig)
     else:
         plt.show()
+
 
