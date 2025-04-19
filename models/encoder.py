@@ -19,10 +19,17 @@ class AttentionPooling(nn.Module):
 
         B = int(batch.max().item()) + 1
         C = x.size(-1)
-        graph_rep = x.new_zeros((B, C))       # (B, C)
-        graph_rep.index_add_(0, batch, out)   # (B, C)
-        return graph_rep                      # (B, C)
 
+        # deterministic pooling: 그래프별로 순서대로 sum
+        # (GPU 에서도 같은 순서로 덧셈이 일어나므로 재현 가능)
+        graph_rep = []
+        for b in range(B):
+            mask = batch == b                # (N,)
+            # out[mask] 를 순서대로 더하기
+            graph_rep.append(out[mask].sum(dim=0))
+        graph_rep = torch.stack(graph_rep, dim=0)  # (B, C)
+
+        return graph_rep
 
 class InteractionGraphEncoder(nn.Module):
     """

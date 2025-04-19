@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from torch.utils.data import DataLoader, Subset
@@ -19,10 +20,12 @@ raw_data_path = "idsse-data"
 data_save_path = "match_data"
 batch_size = 32
 num_workers = 8
-epochs = 100
+epochs = 50
 learning_rate = 1e-4
 num_samples = 10
 SEED = 42
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+os.environ["CUDA_LAUNCH_BLOCKING"]   = "1"
 
 set_evertyhing(SEED)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,10 +88,10 @@ in_dim = graph['Node'].x.size(1)
 
 csdi_config = {
     "num_steps": 500,
-    "channels": 64,
+    "channels": 128,
     "diffusion_embedding_dim": 128,
     "nheads": 4,
-    "layers": 4,
+    "layers": 6,
     "side_dim": 128
 }
 
@@ -102,36 +105,40 @@ scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, thr
 best_state_dict = None
 best_val_loss = float("inf")
 
+train_losses = []
+val_losses   = []
+
 for epoch in tqdm(range(1, epochs + 1), desc="Training..."):
     model.train()
-    total_noise_loss = 0
-    total_player_loss = 0
-    total_loss = 0
+    train_noise_loss = 0
+    train_player_loss = 0
+    train_loss = 0
 
     for batch in tqdm(train_dataloader, desc = "Batch Training..."):
         cond = batch["condition"]                            # [B, T, F]
         target = batch["target"].to(device).view(-1, cond.size(1), 11, 2)  # [B, T, 11, 2]
         graph_batch = batch["graph"].to(device)                              # HeteroData batch
 
-        optimizer.zero_grad()
         # graph → H
         H = graph_encoder(graph_batch)                                       # [B, 128]
         cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))                    # [B,128,11,T]
 
         noise_loss, player_loss = model(target, cond_info=cond_H)
         loss = noise_loss + player_loss
+        
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        total_noise_loss += noise_loss.item()
-        total_player_loss += player_loss.item()
-        total_loss += loss.item()
+        train_noise_loss += noise_loss.item()
+        train_player_loss += player_loss.item()
+        train_loss += loss.item()
 
     num_batches = len(train_dataloader)
     
-    avg_noise_loss = total_noise_loss / num_batches
-    avg_player_loss = total_player_loss / num_batches
-    avg_total_loss = total_loss / num_batches
+    avg_noise_loss = train_noise_loss / num_batches
+    avg_player_loss = train_player_loss / num_batches
+    avg_train_loss = train_loss / num_batches
 
     # --- Validation ---
     model.eval()
@@ -153,21 +160,17 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training..."):
             val_player_loss += player_loss.item()
             val_total_loss += (noise_loss + player_loss).item()
 
-    avg_val = val_total_loss / len(val_dataloader)
-    tqdm.write(f"[Epoch {epoch}]")
-    tqdm.write(f"Cost: {avg_total_loss:.6f} | "
-               f"Noise Loss: {avg_noise_loss:.6f} | "
-               f"Player Loss: {avg_player_loss:.6f} | "
-               f"LR: {scheduler.get_last_lr()[0]:.6f}")
-    tqdm.write(f"Val Loss: {avg_val:.6f} | "
-               f"Noise: {val_noise_loss/len(val_dataloader):.6f} | "
-               f"Player: {val_player_loss/len(val_dataloader):.6f}")
-
-    scheduler.step(avg_val)
-    if avg_val < best_val_loss:
-        best_val_loss = avg_val
+    avg_val_loss = val_total_loss / len(val_dataloader)
+  
+    train_losses.append(avg_train_loss)
+    val_losses.append(avg_val_loss)
+    
+    tqdm.write(f"[Epoch {epoch}]\nCost: {avg_train_loss:.6f} | Noise Loss: {avg_noise_loss:.6f} | Player Loss: {avg_player_loss:.6f} | LR: {scheduler.get_last_lr()[0]:.6f}\n"
+               f"Val Loss: {avg_val_loss:.6f} | Noise: {val_noise_loss/len(val_dataloader):.6f} | Player: {val_player_loss/len(val_dataloader):.6f}")
+    scheduler.step(avg_val_loss)
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
         best_state_dict = model.state_dict()
-
 # 5. Inference (Best-of-N Sampling) & Visualization
 model.load_state_dict(best_state_dict)
 model.eval()
@@ -185,22 +188,12 @@ with torch.no_grad():
         H = graph_encoder(graph_batch)
         cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))
 
-        generated = model.generate(
-            shape=target.shape,
-            cond_info=cond_H,
-            num_samples=num_samples
-        )  # [N, B, T, 11, 2]
-        target = target.unsqueeze(0).expand(num_samples, -1, -1, -1, -1)
+        generated = model.generate(shape=target.shape, cond_info=cond_H, num_samples=num_samples)  # [N, B, T, 11, 2]
+        target = target.unsqueeze(0).expand(num_samples, -1, -1, -1, -1).clone()
 
         # Denormalize
-        x_scales = torch.tensor(
-            [s[0] for s in batch["pitch_scale"]],
-            device=device, dtype=torch.float32
-        ).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
-        y_scales = torch.tensor(
-            [s[1] for s in batch["pitch_scale"]],
-            device=device, dtype=torch.float32
-        ).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
+        x_scales = torch.tensor([s[0] for s in batch["pitch_scale"]], device=device, dtype=torch.float32).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
+        y_scales = torch.tensor([s[1] for s in batch["pitch_scale"]], device=device, dtype=torch.float32).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
 
         generated[..., 0] *= x_scales
         generated[..., 1] *= y_scales
@@ -237,3 +230,17 @@ with torch.no_grad():
 avg_ade = np.mean(all_ade)
 avg_fde = np.mean(all_fde)
 print(f"[Inference - Best of {num_samples}] ADE: {avg_ade:.4f} | FDE: {avg_fde:.4f}")
+
+# 6. Plot learning_curve
+plt.figure(figsize=(6,4))
+plt.plot(range(1, epochs+1), train_losses, label='Train Loss')
+plt.plot(range(1, epochs+1), val_losses,   label='Val Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Train & Validation Loss, 500 steps, 128 channels, 128 embedding dim, 4 heads, 6 layers')
+plt.legend()
+plt.tight_layout()
+
+plt.savefig('results/diffusion_lr_curve.png')
+
+plt.show()
