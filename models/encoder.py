@@ -72,13 +72,15 @@ class InteractionGraphEncoder(nn.Module):
         # first heterogeneous attention
         x = self.het1({'Node': x}, graph.edge_index_dict)
         x = x['Node']
-        x = F.relu(x)
+        # x = F.relu(x)
+        x = F.tanh(x)
         x = self.norm1(x)
 
         # second heterogeneous attention
         x = self.het2({'Node': x}, graph.edge_index_dict)
         x = x['Node']
-        x = F.relu(x)
+        # x = F.relu(x)
+        x = F.tanh(x)
         x = self.norm2(x)
 
         # pooling to graph-level

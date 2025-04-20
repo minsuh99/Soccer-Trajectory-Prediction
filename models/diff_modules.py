@@ -133,7 +133,8 @@ class diff_CSDI(nn.Module):
 
         x = x.reshape(B, inputdim, K * L)              # [B, 2, 1375]
         x = self.input_projection(x)
-        x = F.relu(x)           # [B, C, 1375]
+        # x = F.relu(x)           # [B, C, 1375]
+        x = F.tanh(x)
         x = x.reshape(B, self.channels, K, L)          # [B, C, 11, 125]
 
         diffusion_emb = self.diffusion_embedding(diffusion_step)
@@ -147,7 +148,8 @@ class diff_CSDI(nn.Module):
 
         x = x.reshape(B, self.channels, K * L)  # [B, C, 1375]
         x = self.output_projection1(x)
-        x = F.relu(x)
+        # x = F.relu(x)
+        x = F.tanh(x)
         x = self.output_projection2(x)  # [B, 2, 1375]
         x = x.reshape(B, self.output_dim, K, L)  # [B, 2, 11, 125]
         return x

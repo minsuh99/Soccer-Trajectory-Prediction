@@ -1,4 +1,6 @@
 import os
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -46,7 +48,7 @@ train_dataloader = DataLoader(
     shuffle=True,
     num_workers=num_workers,
     pin_memory=True,
-    persistent_workers=True,
+    persistent_workers=False,
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
     generator=generator(SEED)
@@ -58,7 +60,7 @@ val_dataloader = DataLoader(
     shuffle=False,
     num_workers=num_workers,
     pin_memory=True,
-    persistent_workers=True,
+    persistent_workers=False,
     collate_fn=custom_collate_fn,
     worker_init_fn=worker_init_fn,
 )
@@ -67,7 +69,7 @@ test_dataloader = DataLoader(
     Subset(dataset, test_idx),
     batch_size=16,
     shuffle=False,
-    num_workers=0,
+    num_workers=num_workers,
     pin_memory=True,
     persistent_workers=False,
     collate_fn=custom_collate_fn,
@@ -95,7 +97,7 @@ csdi_config = {
     "side_dim": 128
 }
 
-graph_encoder = InteractionGraphEncoder(in_dim=in_dim, hidden_dim=128, out_dim=128, heads = 1).to(device)
+graph_encoder = InteractionGraphEncoder(in_dim=in_dim, hidden_dim=256, out_dim=128, heads = 2).to(device)
 denoiser = diff_CSDI(csdi_config)
 model = DiffusionTrajectoryModel(denoiser, num_steps=csdi_config["num_steps"]).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -210,10 +212,18 @@ with torch.no_grad():
         x_scales = torch.tensor([s[0] for s in batch["pitch_scale"]], device=device, dtype=torch.float32).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
         y_scales = torch.tensor([s[1] for s in batch["pitch_scale"]], device=device, dtype=torch.float32).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
 
-        generated[..., 0] *= x_scales
-        generated[..., 1] *= y_scales
-        target[..., 0] *= x_scales
-        target[..., 1] *= y_scales
+        # generated[..., 0] *= x_scales
+        # generated[..., 1] *= y_scales
+        # target[..., 0] *= x_scales
+        # target[..., 1] *= y_scales
+        
+        # generated/[0,1] → [−1,1] → 실제[m]
+        generated[..., 0] = (generated[..., 0] - 0.5) * 2 * x_scales
+        generated[..., 1] = (generated[..., 1] - 0.5) * 2 * y_scales
+
+        # target도 동일하게 복원
+        target[..., 0] = (target[..., 0] - 0.5) * 2 * x_scales
+        target[..., 1] = (target[..., 1] - 0.5) * 2 * y_scales
 
         ade = ((generated - target) ** 2).sum(-1).sqrt().mean(2).mean(2)  # [N, B]
         best_idx = ade.argmin(dim=0)                                    # [B]
@@ -241,7 +251,7 @@ with torch.no_grad():
                 os.makedirs('results/player_trajs', exist_ok=True)
                 for p in range(11):
                     save_path = f'results/player_trajs/sample{i:02d}_def{p:02d}.png'
-                    plot_trajectories_on_pitch(others, best_target, best_pred, player_idx=p, save_path=save_path)
+                    plot_trajectories_on_pitch(others, target, pred, player_idx=p, save_path=save_path)
             visualization_done = True
 
 avg_ade = np.mean(all_ade)

@@ -17,6 +17,7 @@ def set_evertyhing(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -79,7 +80,7 @@ def to_single_playing_direction(home,away,events):
     return home,away,events
 
 # Compute smoothed velocity and speed for each player and the ball
-def calc_velocites(df, smoothing=True, filter_='Savitzky-Golay', window=7, polyorder=1, player_maxspeed=100, ball_maxspeed=1000):
+def calc_velocites(df, smoothing=True, filter_='Savitzky-Golay', window=7, polyorder=1, player_maxspeed=12, ball_maxspeed=1000):
     # remove any velocity data already in the dataframe
     columns = [c for c in df.columns if c.split('_')[-1] in ['vx','vy','ax','ay','speed','acceleration']] # Get the player ids
     

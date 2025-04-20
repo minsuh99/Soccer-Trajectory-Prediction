@@ -355,27 +355,51 @@ class MultiMatchSoccerDataset(Dataset):
             self.pitch_cache[match_id] = (pitch.length / 2, pitch.width / 2)
             
         x_scale, y_scale = self.pitch_cache[match_id]
-    
-        target_seq[target_columns[0::2]] /= x_scale
-        target_seq[target_columns[1::2]] /= y_scale
-
-        # other_seq[other_columns[0::2]] = other_seq[other_columns[0::2]] / x_scale
-        # other_seq[other_columns[1::2]] = other_seq[other_columns[1::2]] / y_scale
-
+        
         condition_x_cols = [col for col in condition_seq.columns if col.endswith("_x")]
         condition_y_cols = [col for col in condition_seq.columns if col.endswith("_y")]
-        condition_seq[condition_x_cols] /= x_scale
-        condition_seq[condition_y_cols] /= y_scale
-
+        
+        condition_seq[condition_x_cols] = (condition_seq[condition_x_cols] / x_scale) * 0.5 + 0.5
+        condition_seq[condition_y_cols] = (condition_seq[condition_y_cols] / y_scale) * 0.5 + 0.5
+        target_seq[target_columns[0::2]] = (target_seq[target_columns[0::2]] / x_scale) * 0.5 + 0.5
+        target_seq[target_columns[1::2]] = (target_seq[target_columns[1::2]] / y_scale) * 0.5 + 0.5
+        
+        # other_seq[other_columns[0::2]] = (other_seq[other_columns[0::2]] / x_scale) * 0.5 + 0.5
+        # other_seq[other_columns[1::2]] = (other_seq[other_columns[1::2]] / y_scale) * 0.5 + 0.5
+        
         # Normalization for other columns
-        # suffixes 는 기존과 동일
+        v_max = 12.0
+        framerates = 25.0
+        max_dist = len(condition_seq) / framerates
+        
         for col in condition_seq.columns:
             if col.endswith("_vx") or col.endswith("ball_vx"):
-                condition_seq[col] /= x_scale                  # m/s → 1/s
+                condition_seq[col] = (condition_seq[col] + v_max) / (2 * v_max)
             elif col.endswith("_vy") or col.endswith("ball_vy"):
-                condition_seq[col] /= y_scale
+                condition_seq[col] = (condition_seq[col] + v_max) / (2 * v_max)
             elif col.endswith("_dist"):
-                condition_seq[col] /= (x_scale**2 + y_scale**2) ** 0.5 
+                condition_seq[col] = condition_seq[col] / max_dist
+    
+        # target_seq[target_columns[0::2]] /= x_scale
+        # target_seq[target_columns[1::2]] /= y_scale
+
+        # # other_seq[other_columns[0::2]] = other_seq[other_columns[0::2]] / x_scale
+        # # other_seq[other_columns[1::2]] = other_seq[other_columns[1::2]] / y_scale
+
+        # condition_x_cols = [col for col in condition_seq.columns if col.endswith("_x")]
+        # condition_y_cols = [col for col in condition_seq.columns if col.endswith("_y")]
+        # condition_seq[condition_x_cols] /= x_scale
+        # condition_seq[condition_y_cols] /= y_scale
+
+        # # Normalization for other columns
+        # # suffixes 는 기존과 동일
+        # for col in condition_seq.columns:
+        #     if col.endswith("_vx") or col.endswith("ball_vx"):
+        #         condition_seq[col] /= x_scale                  # m/s → 1/s
+        #     elif col.endswith("_vy") or col.endswith("ball_vy"):
+        #         condition_seq[col] /= y_scale
+        #     elif col.endswith("_dist"):
+        #         condition_seq[col] /= (x_scale**2 + y_scale**2) ** 0.5 
         
         # Add player's position, starter feature
         enriched_condition = []

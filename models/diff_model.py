@@ -8,7 +8,9 @@ class DiffusionTrajectoryModel(nn.Module):
         self.model = model
         self.num_steps = num_steps
 
-        betas = torch.linspace(beta_start, beta_end, num_steps)
+        ts = torch.linspace(0, 1, num_steps)
+        betas = beta_start + (beta_end - beta_start) * (ts ** 2)
+        
         alphas = 1.0 - betas
         alpha_hat = torch.cumprod(alphas, dim=0)
 

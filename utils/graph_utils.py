@@ -99,12 +99,20 @@ def build_edges_based_on_interactions(node_features, pitch_scale):
             edge_attr_dict [("Node", rel, "Node")] = torch.empty((0, 1), dtype=torch.float32)
             return
 
-        # 거리 계산 시 실제 거리 사용
-        s_pos = nodes[s_idx, :2] * torch.tensor([x_scale, y_scale], device=nodes.device)
-        d_pos = nodes[d_idx, :2] * torch.tensor([x_scale, y_scale], device=nodes.device)
-        dist = (s_pos.unsqueeze(1) - d_pos.unsqueeze(0)).norm(dim=-1)  # (Ns, Nd)
+        # # 거리 계산 시 실제 거리 사용
+        # s_pos = nodes[s_idx, :2] * torch.tensor([x_scale, y_scale], device=nodes.device)
+        # d_pos = nodes[d_idx, :2] * torch.tensor([x_scale, y_scale], device=nodes.device)
+        # dist = (s_pos.unsqueeze(1) - d_pos.unsqueeze(0)).norm(dim=-1)  # (Ns, Nd)
 
-        weight = torch.exp(-dist * 0.25) if d_t == 2 else 1.0 / (1.0 + dist)   # (Ns, Nd)
+        # weight = torch.exp(-dist * 0.25) if d_t == 2 else 1.0 / (1.0 + dist)   # (Ns, Nd)
+        # mask = weight > weight_thr
+        
+        # denormalization + 거리 계산
+        real_xy = (nodes[:, :2] - 0.5) * 2 * torch.tensor([x_scale, y_scale], device=nodes.device)
+        s_real = real_xy[s_idx]
+        d_real = real_xy[d_idx]
+        dist = torch.cdist(s_real, d_real)          # (Ns, Nd)
+        weight = torch.exp(-dist * 0.25) if d_t == 2 else 1.0 / (1.0 + dist)
         mask = weight > weight_thr
 
         if not mask.any():
