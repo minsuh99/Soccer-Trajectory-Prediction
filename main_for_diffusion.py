@@ -97,7 +97,7 @@ csdi_config = {
     "side_dim": 128
 }
 
-graph_encoder = InteractionGraphEncoder(in_dim=in_dim, hidden_dim=256, out_dim=128, heads = 2).to(device)
+graph_encoder = InteractionGraphEncoder(in_dim=in_dim, hidden_dim=128, out_dim=128, heads = 2).to(device)
 denoiser = diff_CSDI(csdi_config)
 model = DiffusionTrajectoryModel(denoiser, num_steps=csdi_config["num_steps"]).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -125,7 +125,21 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training..."):
         H = graph_encoder(graph_batch)                                       # [B, 128]
         cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))                    # [B,128,11,T]
 
-        noise_loss, player_loss = model(target, cond_info=cond_H)
+        # Preparing Self-conditioning data
+        if torch.rand(1, device=device) < 0.5:
+            s = torch.zeros_like(target)
+        else:
+            with torch.no_grad():
+                t = torch.randint(0, model.num_steps, (target.size(0),), device=device)
+                x_t, noise = model.q_sample(target, t)
+                x_t = x_t.permute(0,3,2,1)
+                eps_pred1 = model.model(x_t, t, cond_H, self_cond=None)
+                a_hat = model.alpha_hat.to(device)[t].view(-1,1,1,1)
+                x0_hat = (x_t - (1 - a_hat).sqrt() * eps_pred1) / a_hat.sqrt()
+                x0_hat = x0_hat.permute(0,3,2,1)
+            s = x0_hat
+        
+        noise_loss, player_loss = model(target, cond_info=cond_H, self_cond=s)
         loss = noise_loss + player_loss
         
         optimizer.zero_grad()
@@ -156,8 +170,10 @@ for epoch in tqdm(range(1, epochs + 1), desc="Training..."):
 
             H = graph_encoder(graph_batch)
             cond_H = H.unsqueeze(-1).unsqueeze(-1).expand(-1, H.size(1), 11, cond.size(1))
-
-            noise_loss, player_loss = model(target, cond_info=cond_H)
+            
+            s = torch.zeros_like(target)
+            
+            noise_loss, player_loss = model(target, cond_info=cond_H, self_cond=s)
             val_noise_loss += noise_loss.item()
             val_player_loss += player_loss.item()
             val_total_loss += (noise_loss + player_loss).item()
@@ -212,18 +228,18 @@ with torch.no_grad():
         x_scales = torch.tensor([s[0] for s in batch["pitch_scale"]], device=device, dtype=torch.float32).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
         y_scales = torch.tensor([s[1] for s in batch["pitch_scale"]], device=device, dtype=torch.float32).view(1, B, 1, 1).expand(num_samples, B, 1, 1)
 
-        # generated[..., 0] *= x_scales
-        # generated[..., 1] *= y_scales
-        # target[..., 0] *= x_scales
-        # target[..., 1] *= y_scales
+        generated[..., 0] *= x_scales
+        generated[..., 1] *= y_scales
+        target[..., 0] *= x_scales
+        target[..., 1] *= y_scales
         
         # generated/[0,1] → [−1,1] → 실제[m]
-        generated[..., 0] = (generated[..., 0] - 0.5) * 2 * x_scales
-        generated[..., 1] = (generated[..., 1] - 0.5) * 2 * y_scales
+        # generated[..., 0] = (generated[..., 0] - 0.5) * 2 * x_scales
+        # generated[..., 1] = (generated[..., 1] - 0.5) * 2 * y_scales
 
-        # target도 동일하게 복원
-        target[..., 0] = (target[..., 0] - 0.5) * 2 * x_scales
-        target[..., 1] = (target[..., 1] - 0.5) * 2 * y_scales
+        # # target도 동일하게 복원
+        # target[..., 0] = (target[..., 0] - 0.5) * 2 * x_scales
+        # target[..., 1] = (target[..., 1] - 0.5) * 2 * y_scales
 
         ade = ((generated - target) ** 2).sum(-1).sqrt().mean(2).mean(2)  # [N, B]
         best_idx = ade.argmin(dim=0)                                    # [B]

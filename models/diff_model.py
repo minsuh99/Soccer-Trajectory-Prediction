@@ -30,7 +30,7 @@ class DiffusionTrajectoryModel(nn.Module):
         x_t = torch.sqrt(a_hat) * x_0 + torch.sqrt(one_minus) * noise
         return x_t, noise
 
-    def forward(self, x_0, cond_info=None):
+    def forward(self, x_0, cond_info=None, self_cond=None):
         device = x_0.device
         B = x_0.size(0)
         t = torch.randint(0, self.num_steps, (B,), device=device)
@@ -44,7 +44,7 @@ class DiffusionTrajectoryModel(nn.Module):
             cond_info = cond_info.to(device)
 
         # predict noise
-        noise_pred = self.model(x_t, t, cond_info)
+        noise_pred = self.model(x_t, t, cond_info, self_cond)
         noise_loss = F.mse_loss(noise_pred, noise)
 
         # x_t -> x_0
@@ -75,10 +75,11 @@ class DiffusionTrajectoryModel(nn.Module):
 
         x_t = torch.randn((num_samples * B, T, N, D), device=device)
         x_t = x_t.permute(0, 3, 2, 1)  # [N*B, 2, 11, T]
+        s = torch.zeros_like(x_t) # Self-Conditioning initialization
 
         for t_i in reversed(range(self.num_steps)):
             t_tensor = torch.full((num_samples * B,), t_i, device=device, dtype=torch.long)
-            noise_pred = self.model(x_t, t_tensor, cond_info)
+            noise_pred = self.model(x_t, t_tensor, cond_info, self_cond = s)
 
             a = alphas[t_i]
             a_hat = alpha_hat[t_i]
@@ -89,9 +90,10 @@ class DiffusionTrajectoryModel(nn.Module):
             else:
                 noise = torch.zeros_like(x_t)
 
-            x_t = (1 / torch.sqrt(a)) * (
-                x_t - ((1 - a) / torch.sqrt(1 - a_hat)) * noise_pred
-            ) + torch.sqrt(b) * noise
+            x_prev = (1 / torch.sqrt(a)) * (x_t - ((1 - a) / torch.sqrt(1 - a_hat)) * noise_pred) + torch.sqrt(b) * noise
+            
+            s = x_prev.clone()
+            x_t = x_prev
 
         x_t = x_t.permute(0, 3, 2, 1)  # [N*B, T, 11, 2]
         x_t = x_t.view(num_samples, B, T, N, D)

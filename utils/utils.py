@@ -319,7 +319,7 @@ def plot_pitch( field_dimen = (106.0,68.0), field_color ='green', linewidth=2, m
 
 
 ## Vizualization
-def plot_trajectories_on_pitch(others, target, pred, player_idx=None, save_path=None):
+def plot_trajectories_on_pitch(others, target, pred, other_columns = None, target_columns = None, player_idx=None, annotate=False, save_path=None):
     if torch.is_tensor(others):
         others = others.cpu().numpy()
     if torch.is_tensor(target):
@@ -327,29 +327,36 @@ def plot_trajectories_on_pitch(others, target, pred, player_idx=None, save_path=
     if torch.is_tensor(pred):
         pred = pred.cpu().numpy()
     
-    fig, ax = plot_pitch(field_dimen=(106.0, 68.0), field_color='green')
+    fig, ax = plot_pitch(field_dimen=(105.0, 68.0), field_color='green')
 
     # 1) attackers
     for m in range(11):
-        ax.plot(others[:, m, 0], others[:, m, 1],
-                color='red', linestyle='-', linewidth=1.2, alpha=0.7,
-                label='Attackers' if m == 0 else None)
+        ax.plot(others[:, m, 0], others[:, m, 1], color='red', linestyle='-', linewidth=2.0, marker = 'o', markersize = 10, alpha = 0.7, label='Attackers' if m == 0 else None)
+        if annotate and other_columns is not None:
+            col_x = other_columns[2 * m]  # e.g. 'Home_2_x'
+            jersey = col_x.split('_')[1]
+            x0, y0 = others[0, m, 0], others[0, m, 1]
+            ax.text(x0 + 0.5, y0 + 0.5, jersey, color='red', fontsize=10)
     # ball
-    ax.plot(others[:, 11, 0], others[:, 11, 1],
-            color='black', linestyle='-', linewidth=2.0, label='Ball')
+    ax.plot(others[:, 11, 0], others[:, 11, 1], color='black', linestyle='-', linewidth=2.0, marker = 'o', markersize = 6, alpha = 1.0, label='Ball')
 
     # 2) defenders GT / Pred
     idxs = [player_idx] if player_idx is not None else list(range(11))
     for i in idxs:
-        ax.plot(target[:, i, 0], target[:, i, 1],
-                color='blue', linestyle='-', linewidth=2.0, alpha=0.8,
-                label='Target' if i == idxs[0] else None)
-        ax.plot(pred[:, i, 0], pred[:, i, 1],
-                color='skyblue', linestyle='--', linewidth=2.0, alpha=0.9,
-                label='Predicted' if i == idxs[0] else None)
+        ax.plot(target[:, i, 0], target[:, i, 1], color='blue', linestyle='-', linewidth=2.0, alpha=0.7, marker = 'o', markersize = 10, label='Target' if i == idxs[0] else None)
+        if annotate and target_columns is not None:
+            col_x = target_columns[2 * m]  # e.g. 'Home_2_x'
+            jersey = col_x.split('_')[1]
+            x0, y0 = target[0, m, 0], target[0, m, 1]
+            ax.text(x0 + 0.5, y0 + 0.5, jersey, color='blue', fontsize=10)
+        ax.plot(pred[:, i, 0], pred[:, i, 1], color='blue', linestyle='--', linewidth=2.0, alpha=0.5, marker = 'x', markersize = 10, label='Predicted' if i == idxs[0] else None)
+        if annotate and target_columns is not None:
+            col_x = target_columns[2 * m]  # e.g. 'Home_2_x'
+            jersey = col_x.split('_')[1]
+            x0, y0 = pred[0, m, 0], pred[0, m, 1]
+            ax.text(x0 + 0.5, y0 + 0.5, jersey + '(pred)', color='blue', fontsize=10)
 
-    ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.03),
-              ncol=3, frameon=True)
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.03), ncol=4, frameon=True)
 
     if save_path:
         fig.savefig(save_path, bbox_inches='tight')

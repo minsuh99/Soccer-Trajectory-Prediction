@@ -118,6 +118,9 @@ class diff_CSDI(nn.Module):
         nn.init.xavier_uniform_(self.output_projection2.weight, gain=0.01)
         if self.output_projection2.bias is not None:
             nn.init.zeros_(self.output_projection2.bias)
+            
+        # ↓ Self‑conditioning용 projection (x_{t-1} → feature 차원)
+        self.self_cond_projection = Conv1d_with_init(self.output_dim, self.channels,1)            
 
         self.residual_layers = nn.ModuleList([
             ResidualBlock(
@@ -128,7 +131,7 @@ class diff_CSDI(nn.Module):
             ) for _ in range(config["layers"])
         ])
 
-    def forward(self, x, diffusion_step, cond_info=None):       
+    def forward(self, x, diffusion_step, cond_info=None, self_cond=None):       
         B, inputdim, K, L = x.shape  # [B, 2, 11, 125]
 
         x = x.reshape(B, inputdim, K * L)              # [B, 2, 1375]
@@ -136,6 +139,12 @@ class diff_CSDI(nn.Module):
         # x = F.relu(x)           # [B, C, 1375]
         x = F.tanh(x)
         x = x.reshape(B, self.channels, K, L)          # [B, C, 11, 125]
+        
+        if self_cond is not None:
+            sc = self_cond.reshape(B, self.output_dim, K*L)    # [B, 2, 1375]
+            sc = self.self_cond_projection(sc)                # [B, C, 1375]
+            sc = sc.reshape(B, self.channels, K, L)           # [B, C, 11, 125]
+            x = x + sc 
 
         diffusion_emb = self.diffusion_embedding(diffusion_step)
 
